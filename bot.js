@@ -286,7 +286,7 @@ const main = async () => {
         }
         
         // 稍微休息，防止 API 也就是每秒 5 次左右的频率
-        await sleep(1500);
+        await sleep(3000);
     }
     console.log(`=== 全部完成 (成功更新 ${count} 个) ===`);
 };
