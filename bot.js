@@ -104,26 +104,25 @@ const main = async () => {
     const token = auth.tenant_access_token;
     if (!token) return;
 
-    const listRes = await fetchJson(`https://open.feishu.cn/open-apis/bitable/v1/apps/${CONFIG.FEISHU_APP_TOKEN}/tables/${CONFIG.FEISHU_TABLE_ID}/records?page_size=500`, { headers: { 'Authorization': `Bearer ${token}` } });
-    const stocks = listRes.data?.items || [];
+// 修改后：
+const listRes = await fetchJson(`https://open.feishu.cn/open-apis/bitable/v1/apps/${CONFIG.FEISHU_APP_TOKEN}/tables/${CONFIG.FEISHU_TABLE_ID}/records?page_size=500&field_names=true`, { headers: { 'Authorization': `Bearer ${token}` } });    const stocks = listRes.data?.items || [];
 
     for (let s of stocks) {
         // 1. 标准化代码
         const symbol = (s.fields['代码'] || s.fields.symbol || "").toUpperCase();
         if (!symbol) continue;
 
-        // 2. 增强版增量判断 (核心更改)
-        const currentPriceInTable = s.fields['现价'];
-        const now = Date.now();
-        // 尝试从多个层级获取更新时间
-        const lastUpdate = (s.updated_time || s.fields?.updated_time || 0) * 1000;
+       // 2. 增强版增量判断
+// parseFloat 确保把飞书传回来的字符串或者数字正确转换
+const currentPriceInTable = parseFloat(s.fields['现价']) || 0;
+const now = Date.now();
+// 飞书的系统字段有时在 root 级，有时在 fields 级，做一个兼容
+const lastUpdate = (s.updated_time || s.fields?.updated_time || 0) * 1000;
 
-        // 逻辑：只要“现价”列有数字，且更新时间在 12 小时内，就绝对跳过
-        // 如果“现价”为空，说明上次失败了，必须重跑
-        if (currentPriceInTable > 0 && (now - lastUpdate < 43200000)) {
-            console.log(`⏩ 跳过: ${symbol} (已有数据且未过期)`);
-            continue; 
-        }
+if (currentPriceInTable > 0 && (now - lastUpdate < 43200000)) {
+    console.log(`⏩ 跳过: ${symbol} (表内已有现价: ${currentPriceInTable})`);
+    continue; 
+}
 
         console.log(`🚀 Processing: ${symbol}...`);
         try {
