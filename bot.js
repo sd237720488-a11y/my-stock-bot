@@ -177,36 +177,28 @@ const main = async () => {
     console.log(`📡 扫描到 ${stocks.length} 只股票，开始分析...`);
 
     let count = 0;
-    // 3. 循环处理每一只股票
+   // 3. 循环处理每一只股票
     for (let s of stocks) {
-        // 强制转大写，解决 lulu 这种小写搜不到的问题
-const symbol = (s.fields['代码'] || s.fields.symbol || "").toUpperCase();
+        // [1. 标准化代码]
+        const symbol = (s.fields['代码'] || s.fields.symbol || "").toUpperCase();
         if (!symbol) continue;
-        
-        console.log(`Processing: ${symbol}...`);
 
-        // 👇👇👇 插入这段“偷懒代码” 👇👇👇
-        
-        // 检查飞书里是不是已经有价格了
-        const hasPrice = s.fields['现价'] && s.fields['现价'] > 0;
-        
-        // 获取当前小时数 (0-23)
-        const currentHour = new Date().getHours();
-        
-        // 逻辑：如果已经有价格，且当前不是“主要更新时间”(比如每天9点开盘前)，就跳过
-        // 注意：如果你想手动点一下只更新新股，就把下面的 currentHour 判断删掉，直接用 if (hasPrice) continue;
-        
-        /* 这里是一个简单的开关：
-           如果你想 "手动运行时只填坑，不更新老股"，请取消下面 3 行的注释：
-        */
-        // if (hasPrice) {
-        //    console.log(`   ⏭️ 已有数据，跳过 (省流模式)`);
-        //    continue; 
-        // }
-        
-        // 👆👆👆 插入结束 👆👆👆
+        // [2. 精准增量判断]
+        const now = Date.now();
+        const lastUpdateTime = s.updated_time || 0; 
+        const currentPrice = s.fields['现价'];
+
+        // 逻辑：如果已经有价格，且距离上次更新不到 1 小时，就跳过
+        if (currentPrice > 0 && (now - lastUpdateTime < 3600000)) {
+            console.log(`⏩ 跳过 (1小时内已更新): ${symbol}`);
+            continue; 
+        }
+
+        // [3. 频率控制] 为了防止 Finnhub 429 报错，开始请求前先打印日志
+        console.log(`🚀 Processing: ${symbol}...`);
 
         try {
+            // 这里开始你原来的 A. 获取 Finnhub 数据...
             // A. 获取 Finnhub 数据
             const q = await fetchJson(`https://finnhub.io/api/v1/quote?symbol=${symbol}&token=${CONFIG.FINNHUB_KEY}`);
             const m = await fetchJson(`https://finnhub.io/api/v1/stock/metric?symbol=${symbol}&metric=all&token=${CONFIG.FINNHUB_KEY}`);
