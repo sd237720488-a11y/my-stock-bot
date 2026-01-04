@@ -179,7 +179,8 @@ const main = async () => {
     let count = 0;
     // 3. 循环处理每一只股票
     for (let s of stocks) {
-        const symbol = s.fields['代码'] || s.fields.symbol;
+        // 强制转大写，解决 lulu 这种小写搜不到的问题
+const symbol = (s.fields['代码'] || s.fields.symbol || "").toUpperCase();
         if (!symbol) continue;
         
         console.log(`Processing: ${symbol}...`);
@@ -272,7 +273,7 @@ const main = async () => {
         }
         
         // 稍微休息，防止 API 也就是每秒 5 次左右的频率
-        await sleep(500);
+        await sleep(1500);
     }
     console.log(`=== 全部完成 (成功更新 ${count} 个) ===`);
 };
