@@ -262,6 +262,18 @@ const symbol = (s.fields['代码'] || s.fields.symbol || "").toUpperCase();
                 console.log(`   ⚡ 触发报警: ${symbol}`);
             }
 
+           // ================= 核心修改开始 =================
+
+            // 1. 定义一个更强壮的数据清洗函数 (处理 null, undefined, string)
+            const getVal = (val, d = 2) => {
+                const num = parseFloat(val);
+                // 如果不是数字或是 NaN，返回 0；否则保留 d 位小数
+                return isNaN(num) ? 0 : parseFloat(num.toFixed(d));
+            };
+
+            // 2. 调试：如果发现全是 0，请取消下面这行的注释，查看 API 原始返回
+            // if (price > 0) console.log(`🔍 [${symbol}] 原始数据:`, JSON.stringify(metric));
+
             // F. 写入飞书 (三列估值 + 其他字段)
             await fetchJson(`https://open.feishu.cn/open-apis/bitable/v1/apps/${CONFIG.FEISHU_APP_TOKEN}/tables/${CONFIG.FEISHU_TABLE_ID}/records/${s.record_id}`, {
                 method: 'PUT',
@@ -269,31 +281,37 @@ const symbol = (s.fields['代码'] || s.fields.symbol || "").toUpperCase();
                 body: JSON.stringify({
                     fields: {
                         "现价": price,
-                        "性价比(PEG)": parseFloat(safeFixed(norm.peg)),
+                        "性价比(PEG)": getVal(norm.peg),
                         "评价": norm.conclusion,
                         "压力测试": `🛡️ ${stress.conclusion}`,
                         "择时信号": timing,
                         "风险": getRiskLevel(norm.riskValue),
                         
                         // 三色估值
-                        "悲观估值": parseFloat(safeFixed(norm.bearPrice)),
-                        "合理估值": parseFloat(safeFixed(norm.basePrice)),
-                        "乐观估值": parseFloat(safeFixed(norm.bullPrice)),
+                        "悲观估值": getVal(norm.bearPrice),
+                        "合理估值": getVal(norm.basePrice),
+                        "乐观估值": getVal(norm.bullPrice),
 
-                        "回本(PE)": parseFloat(safeFixed(metric.peTTM || 20, 1)),
-                        "过往增速": parseFloat(safeFixed(metric.epsGrowth5Y, 2)) / 100,
-                        "营收增速(季)": parseFloat(safeFixed(metric.revenueGrowthQuarterlyYoy, 2)) / 100,
-
-                   
-            "ROE": parseFloat(safeFixed(metric.roeTTM, 2)) / 100,
-            "净利率": parseFloat(safeFixed(metric.netProfitMarginTTM, 2)) / 100,
-            "股息率": parseFloat(safeFixed(metric.dividendYieldIndicatedAnnual, 2)) / 100,
-            "EPS增速(季)": parseFloat(safeFixed(metric.epsGrowthQuarterlyYoy, 2)) / 100,
-            "EPS增速(TTM)": parseFloat(safeFixed(metric.epsGrowthTTMYoy, 2)) / 100,
-            "超链接": `https://finviz.com/quote.ashx?t=${symbol}`
+                        // 核心财务指标 (注意：飞书百分比字段通常需要 / 100，如果是数字字段则不需要)
+                        "回本(PE)": getVal(metric.peTTM || 20, 1),
+                        "过往增速": getVal(metric.epsGrowth5Y) / 100,
+                        "营收增速(季)": getVal(metric.revenueGrowthQuarterlyYoy) / 100,
+                        
+                        // 修正后的字段获取 (增加备用字段)
+                        "ROE": getVal(metric.roeTTM) / 100,
+                        "净利率": getVal(metric.netProfitMarginTTM) / 100,
+                        
+                        // 股息率核心修复：尝试读取两个不同的字段，如果第一个没有就读第二个
+                        "股息率": (getVal(metric.dividendYieldIndicatedAnnual) || getVal(metric.currentDividendYieldTTM)) / 100,
+                        
+                        "EPS增速(季)": getVal(metric.epsGrowthQuarterlyYoy) / 100,
+                        "EPS增速(TTM)": getVal(metric.epsGrowthTTMYoy) / 100,
+                        
+                        "超链接": `https://finviz.com/quote.ashx?t=${symbol}`
                     }
                 })
             });
+            // ================= 核心修改结束 =================
             console.log(`   ✅ 更新成功: ${symbol} (悲观: ${safeFixed(norm.bearPrice)} | 合理: ${safeFixed(norm.basePrice)})`);
             count++;
 
