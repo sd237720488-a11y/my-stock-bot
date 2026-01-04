@@ -172,7 +172,15 @@ const main = async () => {
     for (let s of stocks) {
         const symbol = (s.fields['代码'] || s.fields.symbol || "").toUpperCase();
         if (!symbol) continue;
-        
+        const lastModified = s.last_modified_time || 0;
+        const now = Date.now();
+        const oneHourMs = 3600 * 1000;
+        const hasPrice = s.fields['现价'] && s.fields['现价'] > 0;
+
+        if (hasPrice && (now - lastModified < oneHourMs)) {
+            console.log(`   ⏭️ ${symbol}: 1小时内已更新，跳过`);
+            continue;
+        }
         console.log(`Processing: ${symbol}...`);
 
         try {
