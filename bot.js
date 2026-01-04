@@ -1,4 +1,4 @@
-// bot.js - AlphaSystem 云端机器人 (V6.0 修正版)
+// bot.js - AlphaSystem 云端机器人 (V6.1 完整修正版)
 const https = require('https');
 
 // ================= 0. 配置区 (环境变量) =================
@@ -96,7 +96,7 @@ const calculateScenarios = (baseInputs, currentPrice) => {
 
 // ================= 4. 主程序 =================
 const main = async () => {
-    console.log("=== AlphaSystem V6.0 启动 ===");
+    console.log("=== AlphaSystem V6.1 启动 ===");
     const auth = await fetchJson('https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal', {
         method: 'POST', headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({ "app_id": CONFIG.FEISHU_APP_ID, "app_secret": CONFIG.FEISHU_APP_SECRET })
@@ -104,25 +104,26 @@ const main = async () => {
     const token = auth.tenant_access_token;
     if (!token) return;
 
-// 修改后：
-const listRes = await fetchJson(`https://open.feishu.cn/open-apis/bitable/v1/apps/${CONFIG.FEISHU_APP_TOKEN}/tables/${CONFIG.FEISHU_TABLE_ID}/records?page_size=500&field_names=true`, { headers: { 'Authorization': `Bearer ${token}` } });    const stocks = listRes.data?.items || [];
+    // 💡 修正 1：获取列表并明确定义 stocks
+    const listRes = await fetchJson(`https://open.feishu.cn/open-apis/bitable/v1/apps/${CONFIG.FEISHU_APP_TOKEN}/tables/${CONFIG.FEISHU_TABLE_ID}/records?page_size=500&field_names=true`, { 
+        headers: { 'Authorization': `Bearer ${token}` } 
+    });
+    const stocks = listRes.data?.items || [];
+    console.log(`📡 扫描到 ${stocks.length} 只股票`);
 
     for (let s of stocks) {
-        // 1. 标准化代码
         const symbol = (s.fields['代码'] || s.fields.symbol || "").toUpperCase();
         if (!symbol) continue;
 
-       // 2. 增强版增量判断
-// parseFloat 确保把飞书传回来的字符串或者数字正确转换
-const currentPriceInTable = parseFloat(s.fields['现价']) || 0;
-const now = Date.now();
-// 飞书的系统字段有时在 root 级，有时在 fields 级，做一个兼容
-const lastUpdate = (s.updated_time || s.fields?.updated_time || 0) * 1000;
+        // 💡 修正 2：增强版增量跳过
+        const currentPriceInTable = parseFloat(s.fields['现价']) || 0;
+        const now = Date.now();
+        const lastUpdate = (s.updated_time || 0) * 1000;
 
-if (currentPriceInTable > 0 && (now - lastUpdate < 43200000)) {
-    console.log(`⏩ 跳过: ${symbol} (表内已有现价: ${currentPriceInTable})`);
-    continue; 
-}
+        if (currentPriceInTable > 0 && (now - lastUpdate < 43200000)) {
+            console.log(`⏩ 跳过: ${symbol} (已有数据)`);
+            continue; 
+        }
 
         console.log(`🚀 Processing: ${symbol}...`);
         try {
@@ -147,7 +148,7 @@ if (currentPriceInTable > 0 && (now - lastUpdate < 43200000)) {
                 else if (reb > 0.05 && reb < 0.20 && (norm.conclusion.includes("击球") || norm.conclusion.includes("长坡"))) timing = "🚀 右侧启动";
             }
 
-            // 写入飞书
+            // 💡 修正 3：补全写入飞书的字段
             await fetchJson(`https://open.feishu.cn/open-apis/bitable/v1/apps/${CONFIG.FEISHU_APP_TOKEN}/tables/${CONFIG.FEISHU_TABLE_ID}/records/${s.record_id}`, {
                 method: 'PUT',
                 headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
