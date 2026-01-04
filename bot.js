@@ -177,25 +177,24 @@ const main = async () => {
     console.log(`📡 扫描到 ${stocks.length} 只股票，开始分析...`);
 
     let count = 0;
-   // 3. 循环处理每一只股票
+// 3. 循环处理每一只股票
     for (let s of stocks) {
         // [1. 标准化代码]
         const symbol = (s.fields['代码'] || s.fields.symbol || "").toUpperCase();
         if (!symbol) continue;
-// 💡 这里的层级非常关键，我们把几种可能的层级都写上：
-        const lastUpdateTime = s.updated_time || s.fields?.updated_time || 0;
-        const currentPrice = s.fields['现价'];
 
-        // 打印这个日志，运行一次 GitHub Actions，看控制台输出什么
-        console.log(`DEBUG: ${symbol} | 现价: ${currentPrice} | 上次更新: ${lastUpdateTime}`);
-        // [2. 精准增量判断]
+        // [2. 精准增量判断] - 确保这里只出现一次 const lastUpdateTime
         const now = Date.now();
-        const lastUpdateTime = (s.updated_time || 0) * 1000;
+        const lastUpdateTime = (s.updated_time || 0) * 1000; 
         const currentPrice = s.fields['现价'];
 
-        // 逻辑：如果已经有价格，且距离上次更新不到 1 小时，就跳过
+        // 逻辑：如果已经有价格，且距离上次更新不到 12 小时，就跳过
         if (currentPrice > 0 && (now - lastUpdateTime < 43200000)) {
-    console.log(`⏩ 跳过 (12小时内已更新): ${symbol}`);
+            console.log(`⏩ 跳过 (12小时内已更新): ${symbol}`);
+            continue; 
+        }
+
+        console.log(`🚀 Processing: ${symbol}...`);
     continue; 
 }
 
