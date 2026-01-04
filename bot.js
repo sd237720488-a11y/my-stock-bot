@@ -104,12 +104,14 @@ const main = async () => {
     const token = auth.tenant_access_token;
     if (!token) return;
 
-    // 💡 修正 1：获取列表并明确定义 stocks
-    const listRes = await fetchJson(`https://open.feishu.cn/open-apis/bitable/v1/apps/${CONFIG.FEISHU_APP_TOKEN}/tables/${CONFIG.FEISHU_TABLE_ID}/records?page_size=500&field_names=true`, { 
-        headers: { 'Authorization': `Bearer ${token}` } 
-    });
-    const stocks = listRes.data?.items || [];
-    console.log(`📡 扫描到 ${stocks.length} 只股票`);
+// --- 核心修正：确保 stocks 变量被正确定义并赋值 ---
+const listRes = await fetchJson(`https://open.feishu.cn/open-apis/bitable/v1/apps/${CONFIG.FEISHU_APP_TOKEN}/tables/${CONFIG.FEISHU_TABLE_ID}/records?page_size=500&field_names=true`, { 
+    headers: { 'Authorization': `Bearer ${token}` } 
+});
+
+// 检查这一行，之前可能是因为少了 listRes.data 导致 stocks 为 0
+const stocks = listRes.data?.items || [];
+console.log(`📡 扫描到 ${stocks.length} 只股票`);
 
     for (let s of stocks) {
         const symbol = (s.fields['代码'] || s.fields.symbol || "").toUpperCase();
