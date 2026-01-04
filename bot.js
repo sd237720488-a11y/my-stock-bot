@@ -1,11 +1,13 @@
-// bot.js - AlphaSystem 云端机器人 (V5.4 CI/CD 稳定版)
-// 修复：增加进程守护、环境检查、优化报错日志
+// bot.js - AlphaSystem 云端机器人 (V5.5 最终防崩版)
+// 修复：兼容性检测增强、超时延长至30秒、JSON解析防御
 
 const https = require('https');
 
 // ================= 0. 环境自检 =================
-if (!globalThis.fetch) {
-    console.error("❌ 错误: 当前 Node 版本过低，不支持 fetch API。请在 main.yml 中使用 node-version: '20'");
+// 核心修复：同时检查 fetch 和 AbortController
+if (!globalThis.fetch || !globalThis.AbortController) {
+    console.error("❌ 错误: 当前 Node 版本过低。请确保 main.yml 中使用 node-version: '20'");
+    console.error("   提示: Node 18+ 才支持原生 fetch 和 AbortController");
     process.exit(1);
 }
 
@@ -17,18 +19,17 @@ const CONFIG = {
     FEISHU_TABLE_ID: process.env.FEISHU_TABLE_ID,
     FEISHU_WEBHOOK: process.env.FEISHU_WEBHOOK,
     FINNHUB_KEY: process.env.FINNHUB_KEY,
-    // 如果你有部署的前端，填这里；没有就保持 localhost
     WEB_URL: "http://localhost:5173" 
 };
 
 // ================= 2. 辅助函数 =================
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
-// 网络请求封装 (带超时和详细报错)
+// 网络请求封装 (核心修复：30s超时 + JSON安全解析)
 const fetchJson = async (url, options = {}) => {
-    // 增加 10秒 超时控制
+    // 修复：延长超时时间到 30秒，防止 CI 环境网络波动导致的崩溃
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 10000);
+    const timeoutId = setTimeout(() => controller.abort(), 30000);
     
     try {
         const res = await fetch(url, { ...options, signal: controller.signal });
@@ -36,12 +37,21 @@ const fetchJson = async (url, options = {}) => {
         
         if (!res.ok) {
             const errorText = await res.text();
-            throw new Error(`HTTP ${res.status} - ${errorText.slice(0, 100)}...`);
+            // 截断错误信息，防止日志过长
+            throw new Error(`HTTP ${res.status} - ${errorText.slice(0, 100)}`);
         }
-        return await res.json();
+
+        // 修复：防止 API 返回空内容或非 JSON 导致 crash
+        const text = await res.text();
+        try {
+            return text ? JSON.parse(text) : {};
+        } catch (e) {
+            console.warn(`⚠️ 警告: 返回内容不是 JSON (${url.slice(0, 20)}...)`);
+            return {};
+        }
     } catch (e) {
         clearTimeout(timeoutId);
-        if (e.name === 'AbortError') throw new Error("请求超时 (10s)");
+        if (e.name === 'AbortError') throw new Error("请求超时 (30s)");
         throw e;
     }
 };
@@ -170,7 +180,7 @@ const calculateScenarios = (baseInputs, currentPrice) => {
 
 // ================= 4. 主程序 (带异常捕获) =================
 const main = async () => {
-    console.log("=== AlphaSystem V5.4 (Action Safe) 启动 ===");
+    console.log("=== AlphaSystem V5.5 (Final Safe) 启动 ===");
     
     // 检查关键密钥
     if (!CONFIG.FINNHUB_KEY || !CONFIG.FEISHU_APP_ID) {
