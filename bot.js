@@ -260,6 +260,11 @@ const main = async () => {
                         "压力测试": `🛡️ ${stress.conclusion}`,
                         "择时信号": timingSignal,
                         "风险": getRiskLevel(norm.riskValue),
+                        // 👇👇👇【把这三行加进去】👇👇👇
+                        "悲观估值": parseFloat(safeFixed(norm.bearPrice)),
+                        "合理估值": parseFloat(safeFixed(norm.basePrice)),
+                        "乐观估值": parseFloat(safeFixed(norm.bullPrice)),
+                        // 👆👆👆【新增结束】👆👆👆
                         "回本(PE)": parseFloat(safeFixed(m.peTTM || 20, 1)),
                         "过往增速": parseFloat(safeFixed(m.epsGrowth5Y, 2)) / 100,
                         "营收增速(季)": parseFloat(safeFixed(m.revenueGrowthQuarterlyYoy, 2)) / 100
