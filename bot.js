@@ -269,20 +269,29 @@ const main = async () => {
                 body: JSON.stringify({
                     fields: {
                         "现价": price,
-                        "性价比(PEG)": parseFloat(safeFixed(norm.peg)),
-                        "评价": norm.conclusion,
-                        "压力测试": `🛡️ ${stress.conclusion}`,
-                        "择时信号": timing,
-                        "风险": getRiskLevel(norm.riskValue),
-                        
+            "性价比(PEG)": parseFloat(safeFixed(norm.peg)),
+            "评价": norm.conclusion,
+            "压力测试": `🛡️ ${stress.conclusion}`,
+            "择时信号": timing,
+            "风险": getRiskLevel(norm.riskValue),
+            "悲观估值": parseFloat(safeFixed(norm.bearPrice)),
+            "合理估值": parseFloat(safeFixed(norm.basePrice)),
+            "乐观估值": parseFloat(safeFixed(norm.bullPrice)),
+            "回本(PE)": parseFloat(safeFixed(metric.peTTM || 20, 1)),
+            
+            // 👇👇👇 新增：补全红框中的财务指标 👇👇👇
+            "过往增速": parseFloat(safeFixed(metric.epsGrowth5Y, 2)) / 100,
+            "营收增速(季)": parseFloat(safeFixed(metric.revenueGrowthQuarterlyYoy, 2)) / 100,
+            "ROE": parseFloat(safeFixed(metric.roeTTM, 2)) / 100,
+            "净利率": parseFloat(safeFixed(metric.netProfitMarginTTM, 2)) / 100,
+            "股息率": parseFloat(safeFixed(metric.dividendYieldIndicatedAnnual, 2)) / 100,
+            "EPS增速(季)": parseFloat(safeFixed(metric.epsGrowthQuarterlyYoy, 2)) / 100,
+            "EPS增速(TTM)": parseFloat(safeFixed(metric.epsGrowthTTMYoy, 2)) / 100,
+            "超链接": `https://finviz.com/quote.ashx?t=${symbol}`
                         // 三色估值
                         "悲观估值": parseFloat(safeFixed(norm.bearPrice)),
                         "合理估值": parseFloat(safeFixed(norm.basePrice)),
                         "乐观估值": parseFloat(safeFixed(norm.bullPrice)),
-
-                        "回本(PE)": parseFloat(safeFixed(metric.peTTM || 20, 1)),
-                        "过往增速": parseFloat(safeFixed(metric.epsGrowth5Y, 2)) / 100,
-                        "营收增速(季)": parseFloat(safeFixed(metric.revenueGrowthQuarterlyYoy, 2)) / 100
                     }
                 })
             });
