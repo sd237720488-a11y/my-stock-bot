@@ -1,11 +1,11 @@
 name: Stock Update Bot
 
-on:
+  on:
   schedule:
-    # 每 1 小时运行一次 (你可以改 cron 表达式)
-    - cron: '0 * * * *'
-  # 允许手动点击运行
-  workflow_dispatch:
+    - cron: '*/15 * * * *' # 保留定时
+  workflow_dispatch:      # 保留手动
+  repository_dispatch:    # 👈 新增这个：允许外部呼叫
+    types: [feishu_update]
 
 jobs:
   build:
