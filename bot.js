@@ -185,22 +185,25 @@ const main = async () => {
 
         // [2. 精准增量判断]
         const now = Date.now();
-        const lastUpdateTime = s.updated_time || 0; 
+        const lastUpdateTime = (s.updated_time || 0) * 1000;
         const currentPrice = s.fields['现价'];
 
         // 逻辑：如果已经有价格，且距离上次更新不到 1 小时，就跳过
-        if (currentPrice > 0 && (now - lastUpdateTime < 3600000)) {
-            console.log(`⏩ 跳过 (1小时内已更新): ${symbol}`);
-            continue; 
-        }
+        if (currentPrice > 0 && (now - lastUpdateTime < 43200000)) {
+    console.log(`⏩ 跳过 (12小时内已更新): ${symbol}`);
+    continue; 
+}
 
         // [3. 频率控制] 为了防止 Finnhub 429 报错，开始请求前先打印日志
         console.log(`🚀 Processing: ${symbol}...`);
-
         try {
             // 这里开始你原来的 A. 获取 Finnhub 数据...
             // A. 获取 Finnhub 数据
             const q = await fetchJson(`https://finnhub.io/api/v1/quote?symbol=${symbol}&token=${CONFIG.FINNHUB_KEY}`);
+             if (Object.keys(q).length === 0) {
+                console.log("   🛑 触发频率限制或网络异常，跳过本轮抓取");
+                continue;
+            }
             const m = await fetchJson(`https://finnhub.io/api/v1/stock/metric?symbol=${symbol}&metric=all&token=${CONFIG.FINNHUB_KEY}`);
             
             if (!q.c) { console.log(`   ⚠️ ${symbol}: 暂无价格数据`); continue; }
