@@ -170,18 +170,32 @@ const main = async () => {
     
     // 3. 循环处理
     for (let s of stocks) {
-        const symbol = (s.fields['代码'] || s.fields.symbol || "").toUpperCase();
-        if (!symbol) continue;
-        const lastModified = s.last_modified_time || 0;
+       // 1. 获取时间戳 (强制转数字，防止飞书返回字符串)
+        const lastModified = parseInt(s.last_modified_time || 0);
         const now = Date.now();
-        const oneHourMs = 3600 * 1000;
-        const hasPrice = s.fields['现价'] && s.fields['现价'] > 0;
+        // 计算距离上次更新过了多少小时
+        const diffHours = (now - lastModified) / (1000 * 60 * 60);
 
-        if (hasPrice && (now - lastModified < oneHourMs)) {
-            console.log(`   ⏭️ ${symbol}: 1小时内已更新，跳过`);
-            continue;
+        // 2. 检查是否已有价格 (注意：'现价' 两个字必须和飞书列名一模一样！)
+        const currentPrice = s.fields['现价'];
+        // 只有当价格存在，且大于0时，才算“已有数据”
+        const hasPrice = currentPrice !== undefined && currentPrice !== null && Number(currentPrice) > 0;
+
+        // 3. 判定逻辑
+        // 如果 (有价格) 并且 (距离上次更新不到 1 小时) -> 跳过
+        if (hasPrice && diffHours < 1.0) {
+             const waitMin = Math.ceil((1 - diffHours) * 60);
+             console.log(`   ⏭️ [跳过] ${symbol}: ${diffHours.toFixed(2)}小时前已更新 (等待${waitMin}分)`);
+             continue; // 真正执行跳过
         }
+
+         console.log(`   🔄 [更新] ${symbol}: 原因 -> ${hasPrice ? "数据太旧" : "无价格数据"}`);
+
+        // ===============================================================
+
         console.log(`Processing: ${symbol}...`);
+        }
+
 
         try {
             // A. 获取数据 (增加 try-catch 避免单个失败卡死)
