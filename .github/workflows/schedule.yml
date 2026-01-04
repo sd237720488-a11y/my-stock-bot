@@ -1,0 +1,27 @@
+name: Stock Update Bot
+
+on:
+  schedule:
+    # 每 1 小时运行一次 (你可以改 cron 表达式)
+    - cron: '0 * * * *'
+  # 允许手动点击运行
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+      
+      - name: Run Bot
+        env:
+          FEISHU_APP_ID: ${{ secrets.FEISHU_APP_ID }}
+          FEISHU_APP_SECRET: ${{ secrets.FEISHU_APP_SECRET }}
+          FEISHU_APP_TOKEN: ${{ secrets.FEISHU_APP_TOKEN }}
+          FEISHU_TABLE_ID: ${{ secrets.FEISHU_TABLE_ID }}
+          FINNHUB_KEY: ${{ secrets.FINNHUB_KEY }}
+        run: node bot.js
