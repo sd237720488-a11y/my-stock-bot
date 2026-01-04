@@ -1,9 +1,15 @@
-// bot.js - AlphaSystem 云端机器人 (V5.3 深度同步版)
-// 包含：React同款双核估值、NBIS/亏损股特判修复、超链接深度推演、智能跳过
+// bot.js - AlphaSystem 云端机器人 (V5.4 CI/CD 稳定版)
+// 修复：增加进程守护、环境检查、优化报错日志
 
 const https = require('https');
 
-// ================= 0. 配置区 =================
+// ================= 0. 环境自检 =================
+if (!globalThis.fetch) {
+    console.error("❌ 错误: 当前 Node 版本过低，不支持 fetch API。请在 main.yml 中使用 node-version: '20'");
+    process.exit(1);
+}
+
+// ================= 1. 配置区 =================
 const CONFIG = {
     FEISHU_APP_ID: process.env.FEISHU_APP_ID, 
     FEISHU_APP_SECRET: process.env.FEISHU_APP_SECRET,
@@ -11,22 +17,33 @@ const CONFIG = {
     FEISHU_TABLE_ID: process.env.FEISHU_TABLE_ID,
     FEISHU_WEBHOOK: process.env.FEISHU_WEBHOOK,
     FINNHUB_KEY: process.env.FINNHUB_KEY,
-    // 👇 请将此处替换为你部署后的网页地址 (如 https://my-alpha-app.vercel.app)
+    // 如果你有部署的前端，填这里；没有就保持 localhost
     WEB_URL: "http://localhost:5173" 
 };
 
-// ================= 1. 辅助函数 =================
+// ================= 2. 辅助函数 =================
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
-const fetchJson = async (url, options) => {
+// 网络请求封装 (带超时和详细报错)
+const fetchJson = async (url, options = {}) => {
+    // 增加 10秒 超时控制
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 10000);
+    
     try {
-        const res = await fetch(url, options);
+        const res = await fetch(url, { ...options, signal: controller.signal });
+        clearTimeout(timeoutId);
+        
         if (!res.ok) {
             const errorText = await res.text();
-            throw new Error(`HTTP ${res.status} - ${errorText}`);
+            throw new Error(`HTTP ${res.status} - ${errorText.slice(0, 100)}...`);
         }
         return await res.json();
-    } catch (e) { throw e; }
+    } catch (e) {
+        clearTimeout(timeoutId);
+        if (e.name === 'AbortError') throw new Error("请求超时 (10s)");
+        throw e;
+    }
 };
 
 const getVal = (val, d = 2) => {
@@ -61,12 +78,12 @@ const sendFeishuAlert = async (symbol, price, signalType, detail) => {
         }
     };
     try { await fetch(CONFIG.FEISHU_WEBHOOK, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(cardContent) }); } 
-    catch (e) { console.error("报警发送失败", e); }
+    catch (e) { console.error("报警发送失败", e.message); }
 };
 
-// ================= 2. 核心算法 (完全复刻 React App 逻辑) =================
+// ================= 3. 核心算法 (同步 React 逻辑) =================
 
-// 2.1 智能增速判断 (修复 NBIS 问题)
+// 3.1 智能增速判断
 const getSmartGrowthInputs = (stock) => {
     const metric = stock.metricRaw || {};
     const growthTTM = parseFloat(metric.epsGrowthTTMYoy) || 0;
@@ -75,18 +92,17 @@ const getSmartGrowthInputs = (stock) => {
     const revGrowthTTM = parseFloat(metric.revenueGrowthTTMYoy) || 0;
     const revGrowth5Y = parseFloat(metric.revenueGrowth5Y) || 0;
 
-    // 亏损判断：没有EPS 或 EPS<=0
+    // 亏损判断
     const isLoss = !metric.epsTTM || metric.epsTTM <= 0;
-    // 如果是亏损股，或者没有利润增速数据，强制看营收
     const showRevenueTrend = isLoss || (metric.epsGrowthTTMYoy === null);
 
     let defaultGrowthVal = 8;
 
     if (showRevenueTrend) {
-        // ✅ 核心修复：取 TTM 和 季度营收 的最大值 (防止季度波动误判)
+        // 取 TTM 和 季度营收 的最大值
         const recentRevMax = Math.max(revGrowthTTM, qtrRevGrowth);
         if (recentRevMax > 0) {
-            defaultGrowthVal = Math.min(recentRevMax, 50); // 锁死 50% 上限
+            defaultGrowthVal = Math.min(recentRevMax, 50); 
         } else if (!isNaN(revGrowth5Y)) {
             defaultGrowthVal = revGrowth5Y;
         }
@@ -101,18 +117,14 @@ const getSmartGrowthInputs = (stock) => {
     return { defaultGrowthVal, isLoss };
 };
 
-// 2.2 估值引擎 (AlphaCore v4.0 - 包含加速模型)
+// 3.2 估值引擎
 const calculateScenarios = (baseInputs, currentPrice) => {
-    const { eps, growthRate, peRatio, riskFreeRate=4.5, roe=0, revenueGrowth=0, pastGrowth=0, qtrEpsGrowth=0 } = baseInputs; 
+    const { eps, growthRate, peRatio, riskFreeRate=4.5, roe=0, pastGrowth=0, qtrEpsGrowth=0 } = baseInputs; 
     let g = Math.min(Number(growthRate) || 0, 50);
     
-    // --- A. 亏损股特判 (困境反转) ---
+    // A. 亏损股特判
     if (!eps || eps <= 0) {
-        // 如果营收增速 (季度或TTM中的代表值) > 25%，视为困境反转
-        // 注意：这里用 g (即 defaultGrowthVal) 作为判定标准更准，因为它已经取了 Max(Qtr, TTM)
-        if (g > 25) { 
-            return { conclusion: "🔥 困境反转", riskValue: 40, peg: 0, bearPrice:0, basePrice:0, bullPrice:0 };
-        }
+        if (g > 25) return { conclusion: "🔥 困境反转", riskValue: 40, peg: 0, bearPrice:0, basePrice:0, bullPrice:0 };
         return { conclusion: "☠️ 垃圾/亏损", riskValue: 99, peg: 0, bearPrice:0, basePrice:0, bullPrice:0 };
     }
 
@@ -120,31 +132,24 @@ const calculateScenarios = (baseInputs, currentPrice) => {
     let bullMult = 1.2;
     let bearDisc = 0.8;
 
-    // --- B. 动态 PE 调整 ---
-    // 1. 低增速熔断
-    if (g < 5 && targetPE > 15) targetPE = 12;
+    // B. 动态调整
+    if (g < 5 && targetPE > 15) targetPE = 12; // 熔断
 
-    // 2. ✅ 核心同步：业绩加速模型 (React版独有逻辑)
     const isAccelerating = qtrEpsGrowth > (pastGrowth + 15);
     if (isAccelerating) {
         bullMult += 0.3;
-        g = Math.max(g, qtrEpsGrowth * 0.8); // 上调预期增速
+        g = Math.max(g, qtrEpsGrowth * 0.8); 
     }
 
-    // 3. 高息压制
     let valuationDrag = 1.0;
     if (targetPE * riskFreeRate > 100) valuationDrag = Math.max(0.75, Math.sqrt(100 / (targetPE * riskFreeRate)));
-
-    // 4. 护城河修正
     if (roe > 25) bearDisc += 0.15;
 
-    // --- C. 计算价格 ---
     const bearPrice = eps * (targetPE * bearDisc * valuationDrag) * (1 + (g * 0.3) / 100);
     const basePrice = eps * (targetPE * valuationDrag) * (1 + g / 100);
     const bullPrice = eps * (targetPE * bullMult * valuationDrag) * (1 + (g * 1.3) / 100);
     const peg = targetPE / (g || 1);
 
-    // --- D. 结论判定 ---
     let conclusion = "合理区间 (持有)";
     const isTrap = targetPE < 10 && g < 2;     
     const isOverdraft = peg > 3.0 && g < 15;   
@@ -155,7 +160,6 @@ const calculateScenarios = (baseInputs, currentPrice) => {
     else if (currentPrice < basePrice * 0.95) conclusion = "🔵 长坡厚雪";
     else if (currentPrice > bullPrice) conclusion = "🔴 非理性繁荣";
 
-    // --- E. 风险评分 ---
     let valScore = currentPrice < bearPrice ? 50 : (currentPrice > bullPrice ? 0 : 50 * (1 - ((currentPrice - bearPrice) / (bullPrice - bearPrice))));
     let qualityScore = Math.min(Math.max(roe, 0), 30);
     let growthScore = peg < 1.0 ? 20 : (peg > 3.0 ? 0 : 20 * ((3 - peg) / 2));
@@ -164,22 +168,26 @@ const calculateScenarios = (baseInputs, currentPrice) => {
     return { peg, riskValue, conclusion, bearPrice, basePrice, bullPrice };
 };
 
-// ================= 3. 主程序 =================
+// ================= 4. 主程序 (带异常捕获) =================
 const main = async () => {
-    console.log("=== AlphaSystem V5.3 (React Sync) 启动 ===");
+    console.log("=== AlphaSystem V5.4 (Action Safe) 启动 ===");
     
+    // 检查关键密钥
+    if (!CONFIG.FINNHUB_KEY || !CONFIG.FEISHU_APP_ID) {
+        throw new Error("❌ 缺失关键环境变量 (FINNHUB_KEY 或 FEISHU_APP_ID)，请在 Secrets 中配置");
+    }
+
     // 1. 飞书鉴权
     const auth = await fetchJson('https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal', {
         method: 'POST', headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({ "app_id": CONFIG.FEISHU_APP_ID, "app_secret": CONFIG.FEISHU_APP_SECRET })
-    }).catch(e => { console.error("❌ 鉴权失败:", e.message); return {}; });
-    
+    });
     const token = auth.tenant_access_token;
-    if (!token) return;
+    if (!token) throw new Error("飞书鉴权失败，Token 为空");
 
     // 2. 获取股票列表
     const listUrl = `https://open.feishu.cn/open-apis/bitable/v1/apps/${CONFIG.FEISHU_APP_TOKEN}/tables/${CONFIG.FEISHU_TABLE_ID}/records?page_size=500`;
-    const listRes = await fetchJson(listUrl, { headers: { 'Authorization': `Bearer ${token}` } }).catch(e => ({}));
+    const listRes = await fetchJson(listUrl, { headers: { 'Authorization': `Bearer ${token}` } });
     const stocks = listRes.data?.items || [];
     console.log(`📡 扫描到 ${stocks.length} 只股票...`);
 
@@ -190,7 +198,7 @@ const main = async () => {
         const symbol = (s.fields['代码'] || s.fields.symbol || "").toUpperCase();
         if (!symbol) continue;
 
-        // --- 智能跳过逻辑 (1小时) ---
+        // 智能跳过 (1小时)
         const lastModified = parseInt(s.last_modified_time || 0);
         const now = Date.now();
         const diffHours = (now - lastModified) / (1000 * 60 * 60);
@@ -205,30 +213,26 @@ const main = async () => {
         console.log(`Processing: ${symbol}...`);
 
         try {
-            // A. 获取 Finnhub 数据
+            // A. 获取 Finnhub
             const q = await fetchJson(`https://finnhub.io/api/v1/quote?symbol=${symbol}&token=${CONFIG.FINNHUB_KEY}`).catch(() => ({}));
-            const m = await fetchJson(`https://finnhub.io/api/v1/stock/metric?symbol=${symbol}&metric=all&token=${CONFIG.FINNHUB_KEY}`).catch(() => ({}));
+            // 加速: 并行获取 metric
+            const mPromise = fetchJson(`https://finnhub.io/api/v1/stock/metric?symbol=${symbol}&metric=all&token=${CONFIG.FINNHUB_KEY}`).catch(() => ({}));
             
-            if (!q.c) { console.log(`   ⚠️ ${symbol}: 暂无价格`); await sleep(1000); continue; }
+            if (!q.c) { console.log(`   ⚠️ ${symbol}: 暂无价格`); await sleep(500); continue; }
+            const m = await mPromise; // 等待 metric
             
             const price = q.c;
             const metric = m.metric || {};
-            
-            // B. 准备数据 (对应 React handleSyncOne)
-            // 修正：epsGrowth5Y 在 Finnhub metric 里通常叫 epsGrowth5Y
             const metricGrowth5Y = metric.epsGrowth5Y || 0;
             
-            const { defaultGrowthVal } = getSmartGrowthInputs({ 
-                metricRaw: metric, 
-                metricGrowth5Y: metricGrowth5Y 
-            });
+            // B. 计算
+            const { defaultGrowthVal } = getSmartGrowthInputs({ metricRaw: metric, metricGrowth5Y: metricGrowth5Y });
             
             const inputs = {
                 eps: metric.epsTTM, 
                 growthRate: defaultGrowthVal, 
                 peRatio: metric.peTTM || 20, 
                 roe: parseFloat(metric.roeTTM)||0,
-                // 下面这些参数主要用于加速模型判定
                 pastGrowth: parseFloat(metricGrowth5Y) || 0,
                 qtrEpsGrowth: parseFloat(metric.epsGrowthQuarterlyYoy) || 0,
                 revenueGrowth: parseFloat(metric.revenueGrowthQuarterlyYoy) || 0
@@ -237,7 +241,7 @@ const main = async () => {
             const norm = calculateScenarios(inputs, price);
             const stress = calculateScenarios({...inputs, growthRate: inputs.growthRate*0.7, peRatio: inputs.peRatio*0.8}, price);
 
-            // C. 择时信号
+            // C. 择时
             const low52 = parseFloat(metric['52WeekLow']), high52 = parseFloat(metric['52WeekHigh']);
             let timing = "⏳ 盘整中";
             if (low52 && high52) {
@@ -247,9 +251,8 @@ const main = async () => {
                 else if (norm.conclusion.includes("击球")) timing = "🚀 右侧启动";
             }
 
-            // D. 写入飞书
+            // D. 写入
             const recordUrl = `https://open.feishu.cn/open-apis/bitable/v1/apps/${CONFIG.FEISHU_APP_TOKEN}/tables/${CONFIG.FEISHU_TABLE_ID}/records/${s.record_id}`;
-            
             await fetchJson(recordUrl, {
                 method: 'PUT',
                 headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
@@ -270,7 +273,6 @@ const main = async () => {
                         "过往增速": getVal(metricGrowth5Y) / 100,
                         "营收增速(季)": getVal(metric.revenueGrowthQuarterlyYoy) / 100,
                         
-                        // ✅ ROE 核心修复：确保读取到 roeTTM，飞书百分比需 /100
                         "ROE": getVal(metric.roeTTM) / 100,
                         "净利率": getVal(metric.netProfitMarginTTM) / 100,
                         "股息率": (getVal(metric.dividendYieldIndicatedAnnual) || getVal(metric.currentDividendYieldTTM)) / 100,
@@ -278,16 +280,12 @@ const main = async () => {
                         "EPS增速(季)": getVal(metric.epsGrowthQuarterlyYoy) / 100,
                         "EPS增速(TTM)": getVal(metric.epsGrowthTTMYoy) / 100,
                         
-                        // ✅ 超链接修复：指向你的网页，文案改为“深度推演”
-                        "超链接": { 
-                            "text": "👉 深度推演", 
-                            "link": `${CONFIG.WEB_URL}/?symbol=${symbol}` 
-                        }
+                        "超链接": { "text": "👉 深度推演", "link": `${CONFIG.WEB_URL}/?symbol=${symbol}` }
                     }
                 })
             });
             
-            // 报警 (仅当出现新机会时)
+            // 报警
             const prevConc = s.fields['评价'] || "";
             if (norm.conclusion.includes("击球区") && !prevConc.includes("击球")) {
                 await sendFeishuAlert(symbol, price, "🟢 黄金击球区", `${norm.conclusion}`);
@@ -300,9 +298,13 @@ const main = async () => {
             console.error(`   ❌ ${symbol} 失败:`, e.message);
         }
         
-        await sleep(1500);
+        await sleep(1000); // 1秒间隔
     }
     console.log(`=== 全部完成 (成功 ${count} 个) ===`);
 };
 
-main();
+// 🌟 核心修复：捕获未处理的异常，确保 GitHub Action 变红
+main().catch(error => {
+    console.error("🔥 致命错误，脚本退出:", error);
+    process.exit(1);
+});
