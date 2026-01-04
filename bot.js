@@ -108,20 +108,24 @@ const main = async () => {
     const stocks = listRes.data?.items || [];
 
     for (let s of stocks) {
+        // 1. 标准化代码
         const symbol = (s.fields['代码'] || s.fields.symbol || "").toUpperCase();
         if (!symbol) continue;
 
+        // 2. 增强版增量判断 (核心更改)
+        const currentPriceInTable = s.fields['现价'];
         const now = Date.now();
-        const lastUpdateTime = (s.updated_time || 0) * 1000;
-        const currentPriceRaw = s.fields['现价'];
+        // 尝试从多个层级获取更新时间
+        const lastUpdate = (s.updated_time || s.fields?.updated_time || 0) * 1000;
 
-        if (currentPriceRaw > 0 && (now - lastUpdateTime < 43200000)) {
-            console.log(`⏩ 跳过: ${symbol}`);
+        // 逻辑：只要“现价”列有数字，且更新时间在 12 小时内，就绝对跳过
+        // 如果“现价”为空，说明上次失败了，必须重跑
+        if (currentPriceInTable > 0 && (now - lastUpdate < 43200000)) {
+            console.log(`⏩ 跳过: ${symbol} (已有数据且未过期)`);
             continue; 
         }
 
         console.log(`🚀 Processing: ${symbol}...`);
-
         try {
             const q = await fetchJson(`https://finnhub.io/api/v1/quote?symbol=${symbol}&token=${CONFIG.FINNHUB_KEY}`);
             if (!q.c) { console.log(`  ⚠️ ${symbol}: 暂无价格`); continue; }
