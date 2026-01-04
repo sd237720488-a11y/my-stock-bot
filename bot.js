@@ -182,7 +182,12 @@ const main = async () => {
         // [1. 标准化代码]
         const symbol = (s.fields['代码'] || s.fields.symbol || "").toUpperCase();
         if (!symbol) continue;
+// 💡 这里的层级非常关键，我们把几种可能的层级都写上：
+        const lastUpdateTime = s.updated_time || s.fields?.updated_time || 0;
+        const currentPrice = s.fields['现价'];
 
+        // 打印这个日志，运行一次 GitHub Actions，看控制台输出什么
+        console.log(`DEBUG: ${symbol} | 现价: ${currentPrice} | 上次更新: ${lastUpdateTime}`);
         // [2. 精准增量判断]
         const now = Date.now();
         const lastUpdateTime = (s.updated_time || 0) * 1000;
