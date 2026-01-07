@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>宏观风控 (Mobile V7.1)</title>
+    <title>宏观风控 (Mobile V7.3 修复版)</title>
     <script src="https://cdn.staticfile.org/Chart.js/3.9.1/chart.min.js"></script>
     
     <style>
@@ -22,7 +22,17 @@
         /* 顶部 */
         .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
         .title { font-size: 18px; font-weight: 800; color: #fff; display: flex; align-items: center; gap: 8px; }
-        .tag { font-size: 10px; background: #374151; padding: 2px 6px; border-radius: 4px; color: #cbd5e1; font-weight: normal; }
+        
+        /* 数据源状态胶囊 */
+        .source-pill { 
+            font-size: 11px; padding: 4px 10px; border-radius: 20px; 
+            font-weight: bold; display: flex; align-items: center; gap: 6px;
+            background: #374151; color: #9ca3af; border: 1px solid #4b5563;
+        }
+        .source-pill.live { background: rgba(16, 185, 129, 0.15); color: var(--green); border-color: var(--green); }
+        .source-pill.cache { background: rgba(245, 158, 11, 0.15); color: var(--orange); border-color: var(--orange); }
+        .source-pill.manual { background: rgba(168, 85, 247, 0.15); color: #c084fc; border-color: #a855f7; }
+
         .refresh-btn { background: var(--primary); border: none; width: 32px; height: 32px; border-radius: 50%; color: white; font-size: 16px; display: flex; justify-content: center; align-items: center; box-shadow: 0 4px 12px rgba(59, 130, 246, 0.4); }
         .refresh-btn:active { transform: scale(0.9); }
         .refresh-btn.spinning { animation: spin 1s linear infinite; opacity: 0.7; pointer-events: none; }
@@ -57,13 +67,15 @@
         }
         .metric-card.loading { opacity: 0.5; }
         .m-left { display: flex; flex-direction: column; flex: 1; margin-right: 10px; }
-        .m-title { font-size: 13px; color: #e5e7eb; font-weight: 700; margin-bottom: 2px; display:flex; align-items:center; gap:6px;}
-        .m-desc { font-size: 11px; color: #6b7280; line-height: 1.4; margin-top: 4px; }
-        .m-value { font-size: 20px; font-weight: 700; font-family: monospace; color: #fff; margin-top: 2px; }
         
-        /* 双值显示优化 */
+        .m-title { font-size: 13px; color: #e5e7eb; font-weight: 700; margin-bottom: 2px; display:flex; align-items:center; gap:6px;}
+        .source-link { font-size: 10px; color: #60a5fa; text-decoration: none; opacity: 0.7; }
+        
+        /* 优化后的解释文字 */
+        .m-desc { font-size: 11px; color: #9ca3af; line-height: 1.5; margin-top: 6px; background: rgba(0,0,0,0.2); padding: 6px; border-radius: 4px; }
+        
+        .m-value { font-size: 20px; font-weight: 700; font-family: monospace; color: #fff; margin-top: 2px; }
         .m-sub-value { font-size: 12px; color: #9ca3af; font-weight: normal; margin-left: 6px; }
-
         .m-right { text-align: right; display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
         .m-badge { font-size: 11px; padding: 3px 8px; border-radius: 6px; font-weight: bold; background: #374151; color: #9ca3af; white-space: nowrap; }
         .edit-icon { font-size: 12px; opacity: 0.5; }
@@ -73,7 +85,7 @@
         .bd-danger { background: rgba(239, 68, 68, 0.2); color: var(--red); }
         .bd-blue { background: rgba(59, 130, 246, 0.2); color: var(--primary); }
 
-        /* 历史警示 (已找回) */
+        /* 历史警示 */
         .history-box { background: #18202f; border-radius: 12px; padding: 16px; margin-top: 24px; border: 1px dashed #374151; }
         .h-title { font-size: 13px; font-weight: bold; color: var(--muted); margin-bottom: 12px; }
         .crash-row { display: flex; align-items: center; margin-bottom: 10px; }
@@ -118,9 +130,11 @@
 </head>
 <body>
 
-    <!-- 1. 顶部 -->
+    <!-- 1. 顶部 (新增数据状态) -->
     <div class="header">
-        <div class="title">🛡️ 宏观风控 <span class="tag">V7.1 永不黑屏</span></div>
+        <div class="title">
+            <div id="dataStatusPill" class="source-pill">⚪️ 离线快照</div>
+        </div>
         <button class="refresh-btn" onclick="fetchData(true)" id="btnRefresh">🔄</button>
     </div>
 
@@ -135,8 +149,7 @@
             <div class="strat-tag" id="st_cash">现金</div>
             <div class="strat-tag" id="st_gold">黄金</div>
         </div>
-        <div id="adviceText" style="margin-top:12px; font-size:12px; color:#9ca3af;">正在加载数据...</div>
-        <div id="statusText" style="font-size:10px; color:#4b5563; margin-top:8px;"></div>
+        <div id="adviceText" style="margin-top:12px; font-size:12px; color:#9ca3af;">正在初始化...</div>
     </div>
 
     <!-- 3. 指标列表 -->
@@ -145,23 +158,30 @@
         <!-- 美联储利率 -->
         <div class="metric-card" id="card_fed" onclick="openEdit('fed')">
             <div class="m-left">
-                <div class="m-title">🇺🇸 联邦基金利率 (Fed) <span class="edit-icon">✏️</span></div>
+                <div class="m-title">
+                    🇺🇸 联邦基金利率 
+                    <a href="https://fred.stlouisfed.org/series/FEDFUNDS" target="_blank" class="source-link" onclick="event.stopPropagation()">🔗</a>
+                    <span class="edit-icon">✏️</span>
+                </div>
                 <div class="m-value" id="val_fed">--%</div>
                 <div class="m-desc">资产定价之锚。高息收水，低息放水。</div>
             </div>
             <div class="m-right"><div class="m-badge bd-blue" id="badge_fed">等待</div></div>
         </div>
 
-        <!-- 萨姆规则 (修正：标题改回失业率，更直观) -->
+        <!-- 萨姆规则 -->
         <div class="metric-card" id="card_sahm" onclick="openEdit('sahm')">
             <div class="m-left">
-                <div class="m-title">🛑 萨姆规则 (失业率) <span class="edit-icon">✏️</span></div>
-                <!-- 双数值显示：左侧为反弹幅度，右侧为真实失业率 -->
+                <div class="m-title">
+                    🛑 萨姆规则 (失业率)
+                    <a href="https://fred.stlouisfed.org/series/UNRATE" target="_blank" class="source-link" onclick="event.stopPropagation()">🔗</a>
+                    <span class="edit-icon">✏️</span>
+                </div>
                 <div class="m-value">
                     <span id="val_sahm_diff" title="反弹幅度">--%</span>
                     <span class="m-sub-value" id="val_sahm_raw" title="当前失业率"></span>
                 </div>
-                <div class="m-desc">比前低上涨 <strong>>0.5%</strong> 即确认为衰退开始。</div>
+                <div class="m-desc">看失业率反弹幅度。如果比过去1年最低点<strong>上涨 >0.5%</strong>，说明经济已进入衰退。</div>
             </div>
             <div class="m-right"><div class="m-badge" id="badge_sahm">等待</div></div>
         </div>
@@ -169,9 +189,13 @@
         <!-- 美债利差 -->
         <div class="metric-card" id="card_yield" onclick="openEdit('yield')">
             <div class="m-left">
-                <div class="m-title">🏦 美债利差 (10Y-2Y) <span class="edit-icon">✏️</span></div>
+                <div class="m-title">
+                    🏦 美债利差 (10Y-2Y)
+                    <a href="https://fred.stlouisfed.org/series/T10Y2Y" target="_blank" class="source-link" onclick="event.stopPropagation()">🔗</a>
+                    <span class="edit-icon">✏️</span>
+                </div>
                 <div class="m-value" id="val_yield">--%</div>
-                <div class="m-desc" id="desc_yield">负值=倒挂。最危险的是<strong>倒挂后迅速回正</strong>。</div>
+                <div class="m-desc" id="desc_yield">负值(倒挂)是危险前兆。最致命的是倒挂很久后<strong>突然回正(变红)</strong>，通常对应崩盘开始。</div>
             </div>
             <div class="m-right"><div class="m-badge" id="badge_yield">等待</div></div>
         </div>
@@ -179,9 +203,13 @@
         <!-- CPI 通胀 -->
         <div class="metric-card" id="card_cpi" onclick="openEdit('cpi')">
             <div class="m-left">
-                <div class="m-title">💸 CPI 通胀 <span class="edit-icon">✏️</span></div>
+                <div class="m-title">
+                    💸 CPI 通胀 (同比)
+                    <a href="https://fred.stlouisfed.org/series/CPIAUCSL" target="_blank" class="source-link" onclick="event.stopPropagation()">🔗</a>
+                    <span class="edit-icon">✏️</span>
+                </div>
                 <div class="m-value" id="val_cpi">--%</div>
-                <div class="m-desc"><strong>>3%</strong> 难降息，<strong>>5%</strong> 滞胀风险。</div>
+                <div class="m-desc">物价涨幅。<strong>>3%</strong> 央行不敢降息；<strong>>5%</strong> 现金贬值(滞胀)，股债双杀。</div>
             </div>
             <div class="m-right"><div class="m-badge" id="badge_cpi">等待</div></div>
         </div>
@@ -189,24 +217,34 @@
         <!-- 辅助指标 -->
         <div class="metric-card manual" style="border-left-color: #a855f7;" onclick="openEdit('buffett')">
             <div class="m-left">
-                <div class="m-title">🍔 巴菲特指标 <span class="edit-icon">✏️</span></div>
+                <div class="m-title">
+                    🍔 巴菲特指标
+                    <a href="https://www.currentmarketvaluation.com/" target="_blank" class="source-link" onclick="event.stopPropagation()">🔗</a>
+                    <span class="edit-icon">✏️</span>
+                </div>
                 <div class="m-value" id="val_buffett">--%</div>
+                <div class="m-desc">美股总市值 ÷ GDP。<strong>>150%</strong> 偏贵，<strong>>200%</strong> 严重泡沫(性价比极低)。</div>
             </div>
             <div class="m-right"><div class="m-badge" id="badge_buffett">手动</div></div>
         </div>
 
         <div class="metric-card manual" style="border-left-color: var(--green);" onclick="openEdit('fear')">
             <div class="m-left">
-                <div class="m-title">😨 恐慌指数 <span class="edit-icon">✏️</span></div>
+                <div class="m-title">
+                    😨 恐慌贪婪指数
+                    <a href="https://edition.cnn.com/markets/fear-and-greed" target="_blank" class="source-link" onclick="event.stopPropagation()">🔗</a>
+                    <span class="edit-icon">✏️</span>
+                </div>
                 <div class="m-value" id="val_fear">--</div>
+                <div class="m-desc"><strong>&lt;25</strong> 极恐(此时买入胜率高)，<strong>>75</strong> 极贪(此时追高容易被套)。</div>
             </div>
             <div class="m-right"><div class="m-badge" id="badge_fear">手动</div></div>
         </div>
     </div>
 
-    <!-- 4. 历史警示 (已找回) -->
+    <!-- 4. 历史警示 -->
     <div class="history-box">
-        <div class="h-title">📉 历史红灯后的结局</div>
+        <div class="h-title">📉 历史红灯后的结局 (纳指最大回撤)</div>
         <div class="crash-row">
             <div class="crash-year">2000</div>
             <div class="crash-track"><div class="crash-fill" style="width: 78%"></div></div>
@@ -221,9 +259,6 @@
             <div class="crash-year">2020</div>
             <div class="crash-track"><div class="crash-fill" style="width: 34%"></div></div>
             <div class="crash-val">-34%</div>
-        </div>
-        <div style="font-size:10px; color:#6b7280; margin-top:8px; text-align:center">
-            *数据指萨姆规则触发后纳指的最大回撤
         </div>
     </div>
 
@@ -248,25 +283,25 @@
         
         <div class="section-title">核心宏观 (自动)</div>
         <div class="input-row">
-            <div class="input-group"><label class="input-label">美联储利率 (%)</label><input type="number" id="inp_fed" step="0.25" oninput="calc()"></div>
-            <div class="input-group"><label class="input-label">CPI 通胀 (%)</label><input type="number" id="inp_cpi" step="0.1" oninput="calc()"></div>
+            <div class="input-group"><label class="input-label">美联储利率 (%)</label><input type="number" id="inp_fed" step="0.25" oninput="calc('manual')"></div>
+            <div class="input-group"><label class="input-label">CPI 通胀 (%)</label><input type="number" id="inp_cpi" step="0.1" oninput="calc('manual')"></div>
         </div>
         
         <!-- 萨姆拆分 (Label 已修正) -->
         <div class="input-row">
-            <div class="input-group"><label class="input-label">当前失业率 (%)</label><input type="number" id="inp_sahm_cur" step="0.1" oninput="calc()"></div>
-            <div class="input-group"><label class="input-label">过去12月最低 (%)</label><input type="number" id="inp_sahm_low" step="0.1" oninput="calc()"></div>
+            <div class="input-group"><label class="input-label">当前失业率 (%)</label><input type="number" id="inp_sahm_cur" step="0.1" oninput="calc('manual')"></div>
+            <div class="input-group"><label class="input-label">过去12月最低 (%)</label><input type="number" id="inp_sahm_low" step="0.1" oninput="calc('manual')"></div>
         </div>
 
         <div class="input-row">
-            <div class="input-group"><label class="input-label">美债利差 (%)</label><input type="number" id="inp_yield" step="0.01" oninput="calc()"></div>
-            <div class="input-group"><label class="input-label" style="color:orange">曾倒挂 (1=是)</label><input type="number" id="inp_was_inverted" value="0" oninput="calc()"></div>
+            <div class="input-group"><label class="input-label">美债利差 (%)</label><input type="number" id="inp_yield" step="0.01" oninput="calc('manual')"></div>
+            <div class="input-group"><label class="input-label" style="color:orange">曾倒挂 (1=是)</label><input type="number" id="inp_was_inverted" value="0" oninput="calc('manual')"></div>
         </div>
 
         <div class="section-title">辅助数据 (手动)</div>
         <div class="input-row">
-            <div class="input-group"><label class="input-label">巴菲特 (%)</label><input type="number" id="inp_buffett" value="221.7" oninput="calc()"></div>
-            <div class="input-group"><label class="input-label">恐慌 (0-100)</label><input type="number" id="inp_fear" value="52" oninput="calc()"></div>
+            <div class="input-group"><label class="input-label">巴菲特 (%)</label><input type="number" id="inp_buffett" value="221.7" oninput="calc('manual')"></div>
+            <div class="input-group"><label class="input-label">恐慌 (0-100)</label><input type="number" id="inp_fear" value="52" oninput="calc('manual')"></div>
         </div>
     </div>
 
@@ -291,28 +326,54 @@
 
     <script>
         const getEl = (id) => document.getElementById(id);
-        const CACHE_KEY = "macro_data_v71"; 
+        const CACHE_KEY = "macro_data_v73"; 
 
-        // 默认快照 (2026年1月近似值，用于兜底)
+        // 默认快照 (2026年1月近似值)
         const SNAPSHOT = {
             fed: 4.5,
             sahm_cur: 4.1, sahm_low: 3.7,
-            yield: 0.15, inverted: 1, // 假设曾倒挂
+            yield: 0.15, inverted: 1,
             cpi: 3.2,
             buffett: 221.7, fear: 52
         };
         
+        function setStatusPill(type) {
+            const pill = getEl('dataStatusPill');
+            if (type === 'live') { pill.innerText = "🟢 实时数据 (API)"; pill.className = "source-pill live"; }
+            else if (type === 'cache') { pill.innerText = "🟡 缓存数据 (24h)"; pill.className = "source-pill cache"; }
+            else if (type === 'manual') { pill.innerText = "🟣 手动/修改"; pill.className = "source-pill manual"; }
+            else { pill.innerText = "⚪️ 离线快照"; pill.className = "source-pill"; }
+        }
+
         // --- 核心计算 ---
-        function calc() {
-            const fed = parseFloat(getEl('inp_fed').value);
-            const sCur = parseFloat(getEl('inp_sahm_cur').value);
-            const sLow = parseFloat(getEl('inp_sahm_low').value);
+        function calc(sourceType) {
+            if (sourceType) setStatusPill(sourceType);
+
+            const fedInput = getEl('inp_fed');
+            const fed = fedInput ? parseFloat(fedInput.value) : NaN;
+            
+            const sahmCurInput = getEl('inp_sahm_cur');
+            const sCur = sahmCurInput ? parseFloat(sahmCurInput.value) : NaN;
+            
+            const sahmLowInput = getEl('inp_sahm_low');
+            const sLow = sahmLowInput ? parseFloat(sahmLowInput.value) : NaN;
+            
             const sahmDiff = (!isNaN(sCur) && !isNaN(sLow)) ? (sCur - sLow) : NaN;
-            const spread = parseFloat(getEl('inp_yield').value);
-            const cpi = parseFloat(getEl('inp_cpi').value);
-            const buffett = parseFloat(getEl('inp_buffett').value);
-            const fear = parseFloat(getEl('inp_fear').value);
-            const wasInverted = parseInt(getEl('inp_was_inverted').value) === 1;
+
+            const yieldInput = getEl('inp_yield');
+            const spread = yieldInput ? parseFloat(yieldInput.value) : NaN;
+            
+            const cpiInput = getEl('inp_cpi');
+            const cpi = cpiInput ? parseFloat(cpiInput.value) : NaN;
+            
+            const buffettInput = getEl('inp_buffett');
+            const buffett = buffettInput ? parseFloat(buffettInput.value) : NaN;
+            
+            const fearInput = getEl('inp_fear');
+            const fear = fearInput ? parseFloat(fearInput.value) : NaN;
+            
+            const invertedInput = getEl('inp_was_inverted');
+            const wasInverted = invertedInput ? (parseInt(invertedInput.value) === 1) : false;
 
             const ds = getEl('dataStore').dataset;
             ds.fed = fed; ds.sahm = sahmDiff; ds.yield = spread; ds.cpi = cpi; ds.buffett = buffett; ds.fear = fear;
@@ -321,28 +382,52 @@
             updateCard('fed', fed, v => v>5 ? ['warn','紧缩'] : (v<2?['safe','宽松']:['neutral','中性']), true);
             
             if (!isNaN(sahmDiff)) {
-                getEl('val_sahm_diff').innerText = `+${sahmDiff.toFixed(2)}%`;
-                getEl('val_sahm_raw').innerText = `(现: ${sCur.toFixed(1)}%)`;
-                const badge = getEl('badge_sahm');
-                if (sahmDiff >= 0.5) { getEl('val_sahm_diff').style.color="var(--red)"; badge.className="m-badge bd-danger"; badge.innerText="衰退确认"; }
-                else if (sahmDiff >= 0.4) { getEl('val_sahm_diff').style.color="var(--orange)"; badge.className="m-badge bd-warn"; badge.innerText="高危"; }
-                else { getEl('val_sahm_diff').style.color="var(--green)"; badge.className="m-badge bd-safe"; badge.innerText="安全"; }
+                const elDiff = getEl('val_sahm_diff');
+                const elRaw = getEl('val_sahm_raw');
+                const elBadge = getEl('badge_sahm');
+                
+                if (elDiff) {
+                    elDiff.innerText = `+${sahmDiff.toFixed(2)}%`;
+                    if (sahmDiff >= 0.5) elDiff.style.color="var(--red)";
+                    else if (sahmDiff >= 0.4) elDiff.style.color="var(--orange)";
+                    else elDiff.style.color="var(--green)";
+                }
+                
+                if (elRaw) elRaw.innerText = `(现: ${sCur.toFixed(1)}%)`;
+                
+                if (elBadge) {
+                    if (sahmDiff >= 0.5) { 
+                        elBadge.className="m-badge bd-danger"; elBadge.innerText="衰退确认"; 
+                    } else if (sahmDiff >= 0.4) { 
+                        elBadge.className="m-badge bd-warn"; elBadge.innerText="高危"; 
+                    } else { 
+                        elBadge.className="m-badge bd-safe"; elBadge.innerText="安全"; 
+                    }
+                }
             } else { resetCard('sahm'); }
 
             if (!isNaN(spread)) {
                 const elY = getEl('val_yield');
                 const elBadge = getEl('badge_yield');
                 const elDesc = getEl('desc_yield');
-                elY.innerText = `${spread.toFixed(2)}%`;
-                if (spread < 0) { 
-                    elY.style.color="var(--orange)"; elBadge.className="m-badge bd-warn"; elBadge.innerText="倒挂"; 
-                    elDesc.innerText = "警示：长期倒挂。一旦回正需清仓。";
-                } else if (spread >= 0 && spread < 0.3 && wasInverted) { 
-                    elY.style.color="var(--red)"; elBadge.className="m-badge bd-danger"; elBadge.innerText="衰退回正"; 
-                    elDesc.innerHTML = "<strong style='color:#ef4444'>危险！</strong>倒挂结束，衰退已至。";
-                } else { 
-                    elY.style.color="var(--green)"; elBadge.className="m-badge bd-safe"; elBadge.innerText="正常"; 
-                    elDesc.innerText = "曲线正常陡峭化，无倒挂风险。";
+                
+                if (elY) {
+                    elY.innerText = `${spread.toFixed(2)}%`;
+                    if (spread < 0) elY.style.color="var(--orange)";
+                    else if (spread >= 0 && spread < 0.3 && wasInverted) elY.style.color="var(--red)";
+                    else elY.style.color="var(--green)";
+                }
+                
+                if (elBadge) {
+                    if (spread < 0) { elBadge.className="m-badge bd-warn"; elBadge.innerText="倒挂"; }
+                    else if (spread >= 0 && spread < 0.3 && wasInverted) { elBadge.className="m-badge bd-danger"; elBadge.innerText="衰退回正"; }
+                    else { elBadge.className="m-badge bd-safe"; elBadge.innerText="正常"; }
+                }
+                
+                if (elDesc) {
+                    if (spread < 0) elDesc.innerHTML = "负值=倒挂。当前<strong>倒挂中</strong>，危机潜伏。";
+                    else if (spread >= 0 && spread < 0.3 && wasInverted) elDesc.innerHTML = "<strong style='color:#ef4444'>危险！</strong>倒挂结束，衰退已至。";
+                    else elDesc.innerText = "曲线正常陡峭化，无倒挂风险。";
                 }
             } else { resetCard('yield'); }
 
@@ -351,13 +436,13 @@
             updateCard('fear', fear, v => v>75 ? ['danger','极贪'] : (v<25?['safe','极恐']:['neutral','中性']), false);
 
             // 2. 总评
+            const dispScore = getEl('disp_score');
             if (isNaN(sahmDiff) || isNaN(spread)) { 
-                getEl('disp_score').innerText="--"; 
+                if (dispScore) dispScore.innerText="--"; 
                 return; 
             }
             
-            // 只要计算成功，就自动缓存
-            saveToCache();
+            if (sourceType === 'live') saveToCache();
 
             let score = 0, advice = "", alloc = {s:0,b:0,c:0,g:0};
             
@@ -373,11 +458,16 @@
                 score = 40; advice = "⚖️ 宏观温和：持有核心股票资产。"; alloc = {s:1, b:0, c:0, g:1};
             }
 
-            const elScore = getEl('disp_score');
-            elScore.innerText = score;
-            elScore.className = `score-val ${score>60?(score>80?'st-danger':'st-warn'):'st-safe'}`;
-            getEl('adviceText').innerText = advice;
-            getEl('mainCard').style.borderColor = score>60?(score>80?'var(--red)':'var(--orange)'):'var(--green)';
+            if (dispScore) {
+                dispScore.innerText = score;
+                dispScore.className = `score-val ${score>60?(score>80?'st-danger':'st-warn'):'st-safe'}`;
+            }
+            
+            const adviceText = getEl('adviceText');
+            if (adviceText) adviceText.innerText = advice;
+            
+            const mainCard = getEl('mainCard');
+            if (mainCard) mainCard.style.borderColor = score>60?(score>80?'var(--red)':'var(--orange)'):'var(--green)';
 
             setStrat('st_stock', alloc.s); setStrat('st_bond', alloc.b); setStrat('st_cash', alloc.c); setStrat('st_gold', alloc.g);
         }
@@ -387,18 +477,36 @@
             if(isNaN(val)) { resetCard(id); return; }
             const elVal = getEl(`val_${id}`);
             const elBadge = getEl(`badge_${id}`);
-            elVal.innerText = val + (isPct?"%":"");
-            const [cls, txt] = logic(val);
-            elBadge.className = `m-badge bd-${cls}`;
-            elBadge.innerText = txt;
+            if (elVal) elVal.innerText = val + (isPct?"%":"");
+            
+            if (elBadge) {
+                const [cls, txt] = logic(val);
+                elBadge.className = `m-badge bd-${cls}`;
+                elBadge.innerText = txt;
+            }
         }
+        
         function resetCard(id) {
-            getEl(`val_${id}`).innerText = "--";
-            getEl(`badge_${id}`).innerText = "Waiting";
-            getEl(`badge_${id}`).className = "m-badge neutral";
+            const elDiff = getEl('val_sahm_diff');
+            const elRaw = getEl('val_sahm_raw');
+            const elVal = getEl(`val_${id}`);
+            const elBadge = getEl(`badge_${id}`);
+
+            if (id === 'sahm') {
+                if (elDiff) { elDiff.innerText = "--"; elDiff.style.color = ""; }
+                if (elRaw) elRaw.innerText = "";
+            } else {
+                if (elVal) elVal.innerText = "--";
+            }
+            
+            if (elBadge) {
+                elBadge.innerText = "Waiting";
+                elBadge.className = "m-badge neutral";
+            }
         }
         function setStrat(id, on) {
             const el = getEl(id);
+            if (!el) return;
             el.className = "strat-tag";
             if(on) {
                 if(id.includes('gold')) el.classList.add('strat-gold');
@@ -432,29 +540,25 @@
                 const data = JSON.parse(raw);
                 if (Date.now() - data.timestamp > 86400000) return false; // 24h
                 fillInputs(data.inputs);
-                getEl('statusText').innerText = `已加载本地缓存 (${new Date(data.timestamp).toLocaleTimeString()})`;
+                calc('cache');
                 return true;
             } catch(e) { return false; }
         }
 
         function loadSnapshot() {
-            // 自动加载兜底快照
             fillInputs(SNAPSHOT);
-            getEl('statusText').innerText = "已加载最新快照 (2026-01)";
-            getEl('statusText').style.color = "var(--muted)";
-            calc();
+            calc('snapshot');
         }
 
         function fillInputs(data) {
-            getEl('inp_fed').value = data.fed;
-            getEl('inp_sahm_cur').value = data.sahm_cur;
-            getEl('inp_sahm_low').value = data.sahm_low;
-            getEl('inp_yield').value = data.yield;
-            getEl('inp_was_inverted').value = data.inverted;
-            getEl('inp_cpi').value = data.cpi;
-            getEl('inp_buffett').value = data.buffett;
-            getEl('inp_fear').value = data.fear;
-            calc();
+            if (getEl('inp_fed')) getEl('inp_fed').value = data.fed;
+            if (getEl('inp_sahm_cur')) getEl('inp_sahm_cur').value = data.sahm_cur;
+            if (getEl('inp_sahm_low')) getEl('inp_sahm_low').value = data.sahm_low;
+            if (getEl('inp_yield')) getEl('inp_yield').value = data.yield;
+            if (getEl('inp_was_inverted')) getEl('inp_was_inverted').value = data.inverted;
+            if (getEl('inp_cpi')) getEl('inp_cpi').value = data.cpi;
+            if (getEl('inp_buffett')) getEl('inp_buffett').value = data.buffett;
+            if (getEl('inp_fear')) getEl('inp_fear').value = data.fear;
         }
 
         // --- API 抓取 ---
@@ -462,14 +566,20 @@
             if (!force && loadFromCache()) return;
 
             const btn = getEl('btnRefresh');
-            const key = getEl('apiKey').value;
+            const keyEl = getEl('apiKey');
             const status = getEl('statusText');
-            btn.classList.add('refresh-btn', 'spinning');
-            status.innerText = "连接中(需约10秒)...";
-            status.style.color = "var(--primary)";
+            
+            if(!keyEl) return;
+            const key = keyEl.value;
+
+            if (btn) btn.classList.add('refresh-btn', 'spinning');
+            if (status) {
+                status.innerText = "连接中(需约10秒)...";
+                status.style.color = "var(--primary)";
+            }
             
             const setCardLoading = (id, loading) => {
-                const card = document.getElementById(`card_${id}`);
+                const card = document.getElementById(`metric-card-${id}`) || document.getElementById(`card_${id}`);
                 if(card) loading ? card.classList.add('loading') : card.classList.remove('loading');
             };
 
@@ -524,13 +634,18 @@
                 }
                 setCardLoading('cpi', false);
 
-                status.innerText = "更新成功 (已缓存)"; status.style.color="var(--green)";
-                calc();
+                if (status) {
+                    status.innerText = "更新成功 (已缓存)";
+                    status.style.color = "var(--green)";
+                }
+                calc('live');
             } catch(e) {
-                if(e !== 'Limit') status.innerText = "网络错误，保留现有数据";
-                status.style.color="var(--orange)";
+                if(e !== 'Limit' && status) {
+                    status.innerText = "网络错误，保留现有数据";
+                    status.style.color = "var(--orange)";
+                }
             } finally { 
-                btn.classList.remove('spinning'); 
+                if (btn) btn.classList.remove('spinning'); 
                 ['fed','sahm','yield','cpi'].forEach(id => setCardLoading(id, false));
             }
         }
@@ -542,15 +657,22 @@
             let title = "";
             let useModal = true;
             
+            const sahmInputs = getEl('sahmInputs');
+            const modalInput = getEl('modalInput');
+
             if(f==='sahm') {
                 title="失业率配置";
-                getEl('modalInput').style.display = 'none';
-                getEl('sahmInputs').style.display = 'flex';
-                getEl('modalSahmCur').value = getEl('inp_sahm_cur').value;
-                getEl('modalSahmLow').value = getEl('inp_sahm_low').value;
+                if(modalInput) modalInput.style.display = 'none';
+                if(sahmInputs) {
+                    sahmInputs.style.display = 'flex';
+                    const curVal = getEl('inp_sahm_cur') ? getEl('inp_sahm_cur').value : "";
+                    const lowVal = getEl('inp_sahm_low') ? getEl('inp_sahm_low').value : "";
+                    if(getEl('modalSahmCur')) getEl('modalSahmCur').value = curVal;
+                    if(getEl('modalSahmLow')) getEl('modalSahmLow').value = lowVal;
+                }
             } else {
-                getEl('modalInput').style.display = 'block';
-                getEl('sahmInputs').style.display = 'none';
+                if(modalInput) modalInput.style.display = 'block';
+                if(sahmInputs) sahmInputs.style.display = 'none';
                 
                 if(f==='fed') title="联邦基金利率 (%)";
                 if(f==='yield') title="美债利差 (10-2) (%)";
@@ -559,32 +681,60 @@
                 if(f==='fear') title="恐慌指数 (0-100)";
                 
                 let iid = `inp_${f}`;
-                getEl('modalInput').value = getEl(iid).value || "";
+                const val = getEl(iid) ? getEl(iid).value : "";
+                if(modalInput) modalInput.value = val;
             }
 
-            getEl('modalTitle').innerText = title;
-            getEl('editModal').style.display = 'flex';
-            if(f!=='sahm') getEl('modalInput').focus();
+            const modalTitle = getEl('modalTitle');
+            if(modalTitle) modalTitle.innerText = title;
+            
+            const editModal = getEl('editModal');
+            if(editModal) editModal.style.display = 'flex';
+            
+            if(f!=='sahm' && modalInput) modalInput.focus();
         }
 
-        function closeEdit() { getEl('editModal').style.display = 'none'; }
+        function closeEdit() { 
+            const editModal = getEl('editModal');
+            if(editModal) editModal.style.display = 'none'; 
+        }
         
         function saveEdit() {
             if(currEdit==='sahm') {
-                getEl('inp_sahm_cur').value = getEl('modalSahmCur').value;
-                getEl('inp_sahm_low').value = getEl('modalSahmLow').value;
+                if(getEl('inp_sahm_cur') && getEl('modalSahmCur')) getEl('inp_sahm_cur').value = getEl('modalSahmCur').value;
+                if(getEl('inp_sahm_low') && getEl('modalSahmLow')) getEl('inp_sahm_low').value = getEl('modalSahmLow').value;
             } else {
-                getEl(`inp_${currEdit}`).value = getEl('modalInput').value;
+                if(getEl(`inp_${currEdit}`) && getEl('modalInput')) getEl(`inp_${currEdit}`).value = getEl('modalInput').value;
             }
-            calc();
+            calc('manual'); // 标记为手动
             closeEdit();
         }
 
-        function toggleSettings() { getEl('settingsPanel').classList.toggle('open'); getEl('overlay').classList.toggle('open'); }
-        function clearData() { ['inp_fed','inp_sahm_cur','inp_sahm_low','inp_yield','inp_cpi','inp_buffett','inp_fear'].forEach(i=>getEl(i).value=''); calc(); getEl('statusText').innerText="已清空"; }
+        function toggleSettings() { 
+            const panel = getEl('settingsPanel');
+            const overlay = getEl('overlay');
+            if(panel) panel.classList.toggle('open'); 
+            if(overlay) overlay.classList.toggle('open'); 
+        }
+        
+        function clearData() { 
+            ['inp_fed','inp_sahm_cur','inp_sahm_low','inp_yield','inp_cpi','inp_buffett','inp_fear'].forEach(i => {
+                if(getEl(i)) getEl(i).value='';
+            }); 
+            calc(); 
+            if(getEl('statusText')) getEl('statusText').innerText="已清空"; 
+        }
+        
         function mockDanger() { 
-            getEl('inp_fed').value=2.0; getEl('inp_sahm_cur').value=4.3; getEl('inp_sahm_low').value=3.7; getEl('inp_yield').value=0.1; getEl('inp_was_inverted').value=1; getEl('inp_cpi').value=2.2; getEl('inp_fear').value=10; 
-            calc(); toggleSettings(); 
+            if(getEl('inp_fed')) getEl('inp_fed').value=2.0; 
+            if(getEl('inp_sahm_cur')) getEl('inp_sahm_cur').value=4.3; 
+            if(getEl('inp_sahm_low')) getEl('inp_sahm_low').value=3.7; 
+            if(getEl('inp_yield')) getEl('inp_yield').value=0.1; 
+            if(getEl('inp_was_inverted')) getEl('inp_was_inverted').value=1; 
+            if(getEl('inp_cpi')) getEl('inp_cpi').value=2.2; 
+            if(getEl('inp_fear')) getEl('inp_fear').value=10; 
+            calc('manual'); 
+            toggleSettings(); 
         }
 
         // 🚀 启动：先尝试缓存，没有则加载快照，最后尝试抓取 (静默)
