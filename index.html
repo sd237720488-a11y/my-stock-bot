@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>宏观风控 (Mobile V7.0)</title>
+    <title>宏观风控 (Mobile V7.1)</title>
     <script src="https://cdn.staticfile.org/Chart.js/3.9.1/chart.min.js"></script>
     
     <style>
@@ -120,7 +120,7 @@
 
     <!-- 1. 顶部 -->
     <div class="header">
-        <div class="title">🛡️ 宏观风控 <span class="tag">V7.0 完全体</span></div>
+        <div class="title">🛡️ 宏观风控 <span class="tag">V7.1 永不黑屏</span></div>
         <button class="refresh-btn" onclick="fetchData(true)" id="btnRefresh">🔄</button>
     </div>
 
@@ -135,7 +135,7 @@
             <div class="strat-tag" id="st_cash">现金</div>
             <div class="strat-tag" id="st_gold">黄金</div>
         </div>
-        <div id="adviceText" style="margin-top:12px; font-size:12px; color:#9ca3af;">数据初始化中...</div>
+        <div id="adviceText" style="margin-top:12px; font-size:12px; color:#9ca3af;">正在加载数据...</div>
         <div id="statusText" style="font-size:10px; color:#4b5563; margin-top:8px;"></div>
     </div>
 
@@ -152,10 +152,11 @@
             <div class="m-right"><div class="m-badge bd-blue" id="badge_fed">等待</div></div>
         </div>
 
-        <!-- 萨姆规则 -->
+        <!-- 萨姆规则 (修正：标题改回失业率，更直观) -->
         <div class="metric-card" id="card_sahm" onclick="openEdit('sahm')">
             <div class="m-left">
                 <div class="m-title">🛑 萨姆规则 (失业率) <span class="edit-icon">✏️</span></div>
+                <!-- 双数值显示：左侧为反弹幅度，右侧为真实失业率 -->
                 <div class="m-value">
                     <span id="val_sahm_diff" title="反弹幅度">--%</span>
                     <span class="m-sub-value" id="val_sahm_raw" title="当前失业率"></span>
@@ -290,7 +291,16 @@
 
     <script>
         const getEl = (id) => document.getElementById(id);
-        const CACHE_KEY = "macro_data_v69"; 
+        const CACHE_KEY = "macro_data_v71"; 
+
+        // 默认快照 (2026年1月近似值，用于兜底)
+        const SNAPSHOT = {
+            fed: 4.5,
+            sahm_cur: 4.1, sahm_low: 3.7,
+            yield: 0.15, inverted: 1, // 假设曾倒挂
+            cpi: 3.2,
+            buffett: 221.7, fear: 52
+        };
         
         // --- 核心计算 ---
         function calc() {
@@ -303,6 +313,9 @@
             const buffett = parseFloat(getEl('inp_buffett').value);
             const fear = parseFloat(getEl('inp_fear').value);
             const wasInverted = parseInt(getEl('inp_was_inverted').value) === 1;
+
+            const ds = getEl('dataStore').dataset;
+            ds.fed = fed; ds.sahm = sahmDiff; ds.yield = spread; ds.cpi = cpi; ds.buffett = buffett; ds.fear = fear;
 
             // 1. UI更新
             updateCard('fed', fed, v => v>5 ? ['warn','紧缩'] : (v<2?['safe','宽松']:['neutral','中性']), true);
@@ -343,6 +356,7 @@
                 return; 
             }
             
+            // 只要计算成功，就自动缓存
             saveToCache();
 
             let score = 0, advice = "", alloc = {s:0,b:0,c:0,g:0};
@@ -350,9 +364,9 @@
             if (sahmDiff >= 0.5 || (spread >= 0 && spread < 0.3 && wasInverted)) {
                 score = 90; advice = "🚨 衰退确认：清空股票，买入国债/现金。"; alloc = {s:0, b:1, c:1, g:0};
             } else if (cpi > 4.0) {
-                score = 80; advice = "🔥 滞胀风险：股债双杀，买入黄金/能源。"; alloc = {s:0, b:0, c:1, g:1};
+                score = 80; advice = "🔥 滞胀风险：Fed 难降息。买黄金抗通胀。"; alloc = {s:0, b:0, c:1, g:1};
             } else if (buffett > 200 && fear > 75) {
-                score = 70; advice = "🎈 泡沫预警：停止买入，持有现金等跌。"; alloc = {s:0, b:0, c:1, g:0};
+                score = 70; advice = "🎈 泡沫太贵：持有现金，等待暴跌。"; alloc = {s:0, b:0, c:1, g:0};
             } else if (sahmDiff < 0.4 && fear < 25) {
                 score = 20; advice = "💰 黄金坑：宏观安全，大胆抄底股票。"; alloc = {s:1, b:0, c:0, g:0};
             } else {
@@ -393,7 +407,7 @@
             }
         }
 
-        // --- 缓存系统 ---
+        // --- 缓存与快照 ---
         function saveToCache() {
             const data = {
                 timestamp: Date.now(),
@@ -414,27 +428,33 @@
         function loadFromCache() {
             const raw = localStorage.getItem(CACHE_KEY);
             if (!raw) return false;
-            
             try {
                 const data = JSON.parse(raw);
-                if (Date.now() - data.timestamp > 86400000) return false;
-
-                const inp = data.inputs;
-                getEl('inp_fed').value = inp.fed;
-                getEl('inp_sahm_cur').value = inp.sahm_cur;
-                getEl('inp_sahm_low').value = inp.sahm_low;
-                getEl('inp_yield').value = inp.yield;
-                getEl('inp_was_inverted').value = inp.inverted;
-                getEl('inp_cpi').value = inp.cpi;
-                getEl('inp_buffett').value = inp.buffett;
-                getEl('inp_fear').value = inp.fear;
-                
-                const timeStr = new Date(data.timestamp).toLocaleTimeString();
-                getEl('statusText').innerText = `已加载本地缓存 (${timeStr})`;
-                getEl('statusText').style.color = "var(--muted)";
-                calc();
+                if (Date.now() - data.timestamp > 86400000) return false; // 24h
+                fillInputs(data.inputs);
+                getEl('statusText').innerText = `已加载本地缓存 (${new Date(data.timestamp).toLocaleTimeString()})`;
                 return true;
             } catch(e) { return false; }
+        }
+
+        function loadSnapshot() {
+            // 自动加载兜底快照
+            fillInputs(SNAPSHOT);
+            getEl('statusText').innerText = "已加载最新快照 (2026-01)";
+            getEl('statusText').style.color = "var(--muted)";
+            calc();
+        }
+
+        function fillInputs(data) {
+            getEl('inp_fed').value = data.fed;
+            getEl('inp_sahm_cur').value = data.sahm_cur;
+            getEl('inp_sahm_low').value = data.sahm_low;
+            getEl('inp_yield').value = data.yield;
+            getEl('inp_was_inverted').value = data.inverted;
+            getEl('inp_cpi').value = data.cpi;
+            getEl('inp_buffett').value = data.buffett;
+            getEl('inp_fear').value = data.fear;
+            calc();
         }
 
         // --- API 抓取 ---
@@ -460,7 +480,10 @@
                 setCardLoading('fed', true);
                 const fRes = await safeFetch(`https://www.alphavantage.co/query?function=FEDERAL_FUNDS_RATE&interval=monthly&apikey=${key}`);
                 if(fRes&&fRes.data) getEl('inp_fed').value = parseFloat(fRes.data[0].value);
-                else if(fRes.err==='limit') { getEl('val_fed').innerText="限流"; return; } 
+                else if(fRes.err==='limit') { 
+                    alert("API限流 (每分钟5次)。已为您保留当前显示的数据，请稍后再试。");
+                    throw 'Limit';
+                }
                 setCardLoading('fed', false);
                 await new Promise(r=>setTimeout(r,1200));
 
@@ -503,8 +526,9 @@
 
                 status.innerText = "更新成功 (已缓存)"; status.style.color="var(--green)";
                 calc();
-            } catch {
-                status.innerText = "网络错误，请重试"; status.style.color="var(--red)";
+            } catch(e) {
+                if(e !== 'Limit') status.innerText = "网络错误，保留现有数据";
+                status.style.color="var(--orange)";
             } finally { 
                 btn.classList.remove('spinning'); 
                 ['fed','sahm','yield','cpi'].forEach(id => setCardLoading(id, false));
@@ -563,9 +587,12 @@
             calc(); toggleSettings(); 
         }
 
+        // 🚀 启动：先尝试缓存，没有则加载快照，最后尝试抓取 (静默)
         window.onload = function() {
             if(!loadFromCache()) {
-                getEl('adviceText').innerText = "请点击右上角刷新，获取最新数据";
+                loadSnapshot();
+                // 延迟 1秒 自动抓取最新，如果成功则覆盖快照
+                setTimeout(fetchData, 1000);
             }
         };
     </script>
