@@ -21,6 +21,9 @@ const CONFIG = {
     FINNHUB_KEY: process.env.FINNHUB_KEY,
     WEB_URL: "http://localhost:5173" 
 };
+// ================= ETF 名单配置 =================
+// 这些代码将走 "回撤交易策略"，不走 PEG 估值
+const ETF_LIST = ['QQQ', 'TQQQ', 'VOO', 'SPY', 'IVV', 'SMH', 'SOXX', 'VGT', 'XLK', 'DIA', 'IWM'];
 
 // ================= 2. 辅助函数 =================
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
@@ -177,7 +180,76 @@ const calculateScenarios = (baseInputs, currentPrice) => {
 
     return { peg, riskValue, conclusion, bearPrice, basePrice, bullPrice };
 };
+// ================= ETF 专用分析引擎 (回撤交易法) =================
+const analyzeETF = (price, metric) => {
+    // 1. 获取关键技术位
+    const high52 = parseFloat(metric['52WeekHigh']);
+    const low52 = parseFloat(metric['52WeekLow']);
+    const ma50 = parseFloat(metric['50DayAverage']); // Finnhub 免费版可能不一定有MA，如果没有就降级用回撤
+    
+    if (!high52) return { conclusion: "⚠️ 数据不足", riskValue: 50, signal: "观望" };
 
+    // 2. 计算回撤幅度 (Drawdown)
+    // 0 表示最高点，-0.1 表示跌了 10%
+    const drawdown = (price - high52) / high52;
+    const dropPercent = (Math.abs(drawdown) * 100).toFixed(1);
+
+    // 3. 制定策略 (基于美股长牛特征)
+    let conclusion = "";
+    let riskValue = 50;
+    let signal = "";
+    let buyAdvice = "";
+
+    if (drawdown > -0.03) {
+        // 跌幅小于 3% (处于历史高位附近)
+        conclusion = "🔥 历史高位 (强趋势)";
+        riskValue = 80; // 追高有风险
+        signal = "定投/持有";
+        buyAdvice = "切勿一把梭，保持定投，警惕回调";
+    } 
+    else if (drawdown > -0.08) {
+        // 跌幅 3% - 8% (正常呼吸回调)
+        conclusion = "📉 健康回调";
+        riskValue = 60;
+        signal = "加码定投";
+        buyAdvice = "倒车接人，适合加大定投倍数";
+    } 
+    else if (drawdown > -0.15) {
+        // 跌幅 8% - 15% (黄金坑 - 往往是纳指的中期底)
+        conclusion = "💰 黄金坑 (中期底)";
+        riskValue = 30; // 风险释放了一大半
+        signal = "重仓买入";
+        buyAdvice = "难得的捡钱机会，大单买入";
+    } 
+    else if (drawdown > -0.25) {
+        // 跌幅 15% - 25% (技术性熊市)
+        conclusion = "🐻 熊市区域";
+        riskValue = 20;
+        signal = "越跌越买";
+        buyAdvice = "分批抄底，每跌 3% 加一倍仓位";
+    } 
+    else {
+        // 跌幅 > 25% (危机模式)
+        conclusion = "☠️ 极度恐慌";
+        riskValue = 10; // 遍地黄金
+        signal = "全仓/杠杆";
+        buyAdvice = "如果是标普/纳指，此时是改变命运的机会";
+    }
+
+    // 格式化输出，为了适配飞书那个三栏估值，我们伪造一下数据
+    // 悲观 = 回撤20%的价格，合理 = 回撤10%的价格，乐观 = 前高
+    return {
+        conclusion: `${conclusion} (回撤-${dropPercent}%)`,
+        riskValue: riskValue,
+        timing: signal, // 借用择时字段
+        detail: buyAdvice,
+        // 伪造估值数据供显示
+        bearPrice: high52 * 0.8,  // 跌20%是底
+        basePrice: high52 * 0.9,  // 跌10%是合理
+        bullPrice: high52,        // 前高是阻力
+        peg: 0 // ETF 不看 PEG
+    };
+};
 // ================= 4. 主程序 (带异常捕获) =================
 const main = async () => {
     console.log("=== AlphaSystem V5.5 (Final Safe) 启动 ===");
@@ -236,29 +308,61 @@ const main = async () => {
             const metricGrowth5Y = metric.epsGrowth5Y || 0;
             
             // B. 计算
-            const { defaultGrowthVal } = getSmartGrowthInputs({ metricRaw: metric, metricGrowth5Y: metricGrowth5Y });
+          // ================= 核心修改：区分个股与 ETF =================
+            let norm, stress;
             
-            const inputs = {
-                eps: metric.epsTTM, 
-                growthRate: defaultGrowthVal, 
-                peRatio: metric.peTTM || 20, 
-                roe: parseFloat(metric.roeTTM)||0,
-                pastGrowth: parseFloat(metricGrowth5Y) || 0,
-                qtrEpsGrowth: parseFloat(metric.epsGrowthQuarterlyYoy) || 0,
-                revenueGrowth: parseFloat(metric.revenueGrowthQuarterlyYoy) || 0
-            };
-            
-            const norm = calculateScenarios(inputs, price);
-            const stress = calculateScenarios({...inputs, growthRate: inputs.growthRate*0.7, peRatio: inputs.peRatio*0.8}, price);
+            // 检查是否在 ETF 名单中
+            const isETF = ETF_LIST.includes(symbol);
 
+            if (isETF) {
+                console.log(`   📊 [ETF模式] 分析 ${symbol}...`);
+                // 1. 运行 ETF 专用策略
+                const etfResult = analyzeETF(price, metric);
+                
+                // 2. 格式对齐 (为了让下面的写入飞书逻辑通用)
+                norm = {
+                    peg: 0, // ETF不显示PEG
+                    riskValue: etfResult.riskValue,
+                    conclusion: etfResult.conclusion,
+                    bearPrice: etfResult.bearPrice,
+                    basePrice: etfResult.basePrice,
+                    bullPrice: etfResult.bullPrice
+                };
+                // ETF 不需要压力测试，或者压力测试就是“再跌10%”
+                stress = { conclusion: etfResult.detail }; // 把建议写在压力测试栏
+                
+                // 强制覆盖择时信号
+                var customTiming = etfResult.timing; 
+            } else {
+                // === 原有个股逻辑 ===
+                const { defaultGrowthVal } = getSmartGrowthInputs({ metricRaw: metric, metricGrowth5Y: metricGrowth5Y });
+                const inputs = {
+                    eps: metric.epsTTM, 
+                    growthRate: defaultGrowthVal, 
+                    peRatio: metric.peTTM || 20, 
+                    roe: parseFloat(metric.roeTTM)||0,
+                    pastGrowth: parseFloat(metricGrowth5Y) || 0,
+                    qtrEpsGrowth: parseFloat(metric.epsGrowthQuarterlyYoy) || 0,
+                    revenueGrowth: parseFloat(metric.revenueGrowthQuarterlyYoy) || 0
+                };
+                norm = calculateScenarios(inputs, price);
+                stress = calculateScenarios({...inputs, growthRate: inputs.growthRate*0.7, peRatio: inputs.peRatio*0.8}, price);
+            }
+            
             // C. 择时
+
             const low52 = parseFloat(metric['52WeekLow']), high52 = parseFloat(metric['52WeekHigh']);
             let timing = "⏳ 盘整中";
-            if (low52 && high52) {
-                const pos = (price - low52)/(high52 - low52);
-                if (pos < 0.05) timing = "🔪 左侧博弈";
-                else if (pos > 0.8) timing = "⚠️ 高位运行";
-                else if (norm.conclusion.includes("击球")) timing = "🚀 右侧启动";
+            if (isETF) {
+                timing = customTiming; // 使用 ETF 的“定投/加仓”信号
+            } else {
+                // 原有的个股择时逻辑
+                if (low52 && high52) {
+                    const pos = (price - low52)/(high52 - low52);
+                    if (pos < 0.05) timing = "🔪 左侧博弈";
+                    else if (pos > 0.8) timing = "⚠️ 高位运行";
+                    else if (norm.conclusion.includes("击球")) timing = "🚀 右侧启动";
+                }
             }
 
             // D. 写入
