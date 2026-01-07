@@ -1,27 +1,53 @@
-name: Stock Update Bot
+name: Macro & Stock Bot
 
 on:
   schedule:
+    # 任务1：每天北京时间 08:00 (UTC 00:00) 运行宏观检查
+    - cron: '0 0 * * *'
+    # 任务2：每15分钟运行个股扫描 (原功能)
     - cron: '*/15 * * * *'
+  
+  # 允许手动触发
   workflow_dispatch:
+  
+  # 保留你原来的飞书 Webhook 触发
   repository_dispatch:
     types: [feishu_update]
 
 jobs:
-  build:
+  run-bots:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    
     steps:
-      - uses: actions/checkout@v3
-      - name: Setup Node.js
-        uses: actions/setup-node@v3
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
         with:
-          node-version: '18'
-      
-      - name: Run Bot
+          node-version: '20'
+
+      # --- 步骤 1: 宏观风控哨兵 (仅特定时间运行) ---
+      - name: Run Macro Sentinel (Daily Report)
+        # 逻辑：只有在"每天0点定时任务" 或 "手动触发" 或 "Webhook触发" 时才运行宏观检查
+        # 避免在每15分钟的例行扫描中重复发送宏观日报
+        if: github.event.schedule == '0 0 * * *' || github.event_name != 'schedule'
         env:
+          FEISHU_WEBHOOK: ${{ secrets.FEISHU_WEBHOOK }}
+          ALPHAVANTAGE_KEY: ${{ secrets.ALPHAVANTAGE_KEY }}
+        run: node macro.js
+
+      # --- 步骤 2: 个股扫描机器人 (总是运行) ---
+      - name: Run Stock Scanner
+        env:
+          # 飞书基础配置
           FEISHU_APP_ID: ${{ secrets.FEISHU_APP_ID }}
           FEISHU_APP_SECRET: ${{ secrets.FEISHU_APP_SECRET }}
           FEISHU_APP_TOKEN: ${{ secrets.FEISHU_APP_TOKEN }}
           FEISHU_TABLE_ID: ${{ secrets.FEISHU_TABLE_ID }}
+          FEISHU_WEBHOOK: ${{ secrets.FEISHU_WEBHOOK }}
+          # 数据源配置
           FINNHUB_KEY: ${{ secrets.FINNHUB_KEY }}
+          ALPHAVANTAGE_KEY: ${{ secrets.ALPHAVANTAGE_KEY }}
         run: node bot.js
