@@ -1,197 +1,486 @@
-// bot.js - AlphaSystem 云端机器人 (V6.0 宏观指挥官版)
-// 新增：每日宏观晨报、萨姆规则自动监测、网页仪表盘联动
-
-const https = require('https');
-
-// ================= 0. 环境配置 =================
-// 检查 Fetch 支持
-if (!globalThis.fetch || !globalThis.AbortController) {
-    console.error("❌ Node 版本过低，请升级到 Node 20+");
-    process.exit(1);
-}
-
-const CONFIG = {
-    // 飞书配置 (GitHub Secrets)
-    FEISHU_APP_ID: process.env.FEISHU_APP_ID, 
-    FEISHU_APP_SECRET: process.env.FEISHU_APP_SECRET,
-    FEISHU_APP_TOKEN: process.env.FEISHU_APP_TOKEN, 
-    FEISHU_TABLE_ID: process.env.FEISHU_TABLE_ID,
-    FEISHU_WEBHOOK: process.env.FEISHU_WEBHOOK,
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AlphaSystem 宏观全景指挥台 V4.3 (网络优化版)</title>
     
-    // 数据源配置
-    FINNHUB_KEY: process.env.FINNHUB_KEY,
-    ALPHAVANTAGE_KEY: "O0VQP18WF8I5N66X", // 已内置你的 Key
+    <!-- 1. 核心图表库 (使用 Staticfile CDN 加速) -->
+    <script src="https://cdn.staticfile.org/Chart.js/3.9.1/chart.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@2.1.0"></script>
     
-    // 👇【重要】请把第一步生成的 GitHub Pages 链接填在这里
-    DASHBOARD_URL: "https://你的用户名.github.io/你的仓库名/" 
-};
+    <!-- 2. 样式库 (Tailwind) -->
+    <script src="https://cdn.tailwindcss.com"></script>
 
-// ================= 1. 基础工具 =================
-const sleep = (ms) => new Promise(r => setTimeout(r, ms));
-
-const fetchJson = async (url) => {
-    const controller = new AbortController();
-    const id = setTimeout(() => controller.abort(), 20000); // 20s 超时
-    try {
-        const res = await fetch(url, { signal: controller.signal });
-        clearTimeout(id);
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        return await res.json();
-    } catch (e) {
-        clearTimeout(id);
-        return null; // 失败返回空，不崩溃
-    }
-};
-
-// ================= 2. 宏观分析引擎 (与网页版逻辑一致) =================
-const analyzeMacro = async () => {
-    console.log("🌦️ 正在扫描宏观气象 (Alpha Vantage)...");
-    
-    try {
-        // 1. 抓取失业率 (计算真·萨姆规则)
-        const resUnemp = await fetchJson(`https://www.alphavantage.co/query?function=UNEMPLOYMENT&apikey=${CONFIG.ALPHAVANTAGE_KEY}`);
+    <!-- 3. 备用样式 (防止 Tailwind 加载失败时的保底) -->
+    <style>
+        /* 基础重置，确保就算没加载 CSS 也能看 */
+        body { background-color: #0f172a; color: #e2e8f0; font-family: sans-serif; padding: 20px; }
+        .card { border: 1px solid #334155; padding: 20px; margin-bottom: 20px; border-radius: 8px; background: #1e293b; }
+        button { cursor: pointer; }
+        /* 如果 Tailwind 加载成功，下面这些类会被覆盖，不影响 */
+        .input-dark { background-color: #0f172a; border: 1px solid #475569; color: white; padding: 0.25rem 0.5rem; border-radius: 0.25rem; width: 100%; font-size: 0.875rem; font-family: monospace; text-align: right; }
+        .btn-primary { background-color: #2563eb; color: white; padding: 0.5rem 1rem; border-radius: 0.375rem; font-weight: 600; transition: all 0.2s; width: 100%; display: flex; align-items: center; justify-content: center; gap: 0.5rem; font-size: 0.875rem; }
+        .btn-primary:hover { background-color: #1d4ed8; }
+        .btn-primary:disabled { background-color: #334155; cursor: not-allowed; color: #94a3b8; }
         
-        // 2. 抓取国债 (计算利差)
-        // 注意：免费 Key 并发限制，需要间隔
-        await sleep(1500); 
-        const res10y = await fetchJson(`https://www.alphavantage.co/query?function=TREASURY_YIELD&interval=monthly&maturity=10year&apikey=${CONFIG.ALPHAVANTAGE_KEY}`);
-        await sleep(1500);
-        const res2y = await fetchJson(`https://www.alphavantage.co/query?function=TREASURY_YIELD&interval=monthly&maturity=2year&apikey=${CONFIG.ALPHAVANTAGE_KEY}`);
+        .status-badge { padding: 0.15rem 0.5rem; border-radius: 4px; font-size: 0.7rem; font-weight: 700; display: inline-block; }
+        .status-safe { background-color: #064e3b; color: #34d399; border: 1px solid #059669; }
+        .status-warn { background-color: #451a03; color: #fbbf24; border: 1px solid #b45309; }
+        .status-danger { background-color: #450a0a; color: #fca5a5; border: 1px solid #b91c1c; }
+        .status-neutral { background-color: #1e293b; color: #94a3b8; border: 1px solid #475569; }
 
-        // --- 数据处理 ---
-        let sahmStatus = { diff: 0, level: "未知", color: "grey" };
-        let yieldStatus = { spread: 0, level: "未知", color: "grey" };
+        .metric-label { font-size: 0.7rem; color: #94a3b8; font-weight: bold; margin-bottom: 0.25rem; }
         
-        // A. 计算萨姆规则 (3个月移动平均)
-        if (resUnemp && resUnemp.data && resUnemp.data.length >= 24) {
-            const d = resUnemp.data;
-            const curMA = (parseFloat(d[0].value) + parseFloat(d[1].value) + parseFloat(d[2].value)) / 3;
-            
+        .divider { border-top: 1px solid #334155; margin: 1rem 0; }
+        
+        /* 隐藏滚动条但保留功能 */
+        .no-scrollbar::-webkit-scrollbar { display: none; }
+        .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+    </style>
+</head>
+<body class="p-4 md:p-8 max-w-7xl mx-auto min-h-screen flex flex-col">
+
+    <!-- 顶部 Header -->
+    <header class="mb-6 border-b border-slate-700 pb-4 flex flex-col md:flex-row justify-between items-start md:items-end gap-4">
+        <div>
+            <h1 class="text-xl font-bold text-white flex items-center gap-3">
+                <span class="text-2xl">🏛️</span> AlphaSystem 宏观全景指挥台
+                <span class="text-[10px] bg-slate-800 text-slate-300 px-2 py-1 rounded border border-slate-600 font-mono">V4.3 稳定版</span>
+            </h1>
+            <p class="text-slate-400 text-xs mt-2 max-w-2xl leading-relaxed">
+                <span class="text-emerald-400 font-bold">✅ 已同步最新市场数据 (2026-01-07 快照)</span><br>
+                无需等待 API 加载，核心宏观数据已内置。点击右侧按钮可校准最新实时数据。
+            </p>
+        </div>
+        
+        <div class="flex flex-col items-end gap-2 w-full md:w-auto">
+            <div class="flex gap-2 w-full md:w-auto items-center bg-slate-800 p-2 rounded border border-slate-700">
+                <span class="text-[10px] text-slate-400 font-bold mr-2">API 密钥</span>
+                <input type="text" id="apiKey" value="O0VQP18WF8I5N66X" class="input-dark w-32 border-none bg-slate-900" placeholder="AlphaVantage Key">
+                <button onclick="fetchOfficialData()" id="fetchBtn" class="bg-blue-600 hover:bg-blue-500 text-white px-3 py-1 rounded text-xs font-bold transition-colors flex items-center gap-2">
+                    <span id="btnIcon">📡</span> 校准实时数据
+                </button>
+            </div>
+            <div class="text-[10px] text-slate-500 font-mono" id="lastUpdate">状态: 内置快照已加载</div>
+        </div>
+    </header>
+
+    <!-- 核心决策区：风控信号总览 -->
+    <div class="mb-8">
+        <div class="card border-l-4 border-l-blue-500 bg-slate-800/50">
+            <div class="flex flex-col md:flex-row gap-6 items-center">
+                
+                <!-- 综合评级 -->
+                <div class="flex-1 text-center md:text-left">
+                    <div class="metric-label">当前宏观风险等级</div>
+                    <div class="text-4xl font-black text-white mb-2" id="globalRiskTitle">计算中...</div>
+                    <div id="globalRiskDesc" class="text-sm text-slate-400">正在分析五维模型...</div>
+                </div>
+
+                <!-- 核心建议 -->
+                <div class="w-full md:w-auto bg-slate-900/80 p-4 rounded border border-slate-700 md:min-w-[300px]">
+                    <div class="metric-label text-blue-400">资产配置建议 (仓位)</div>
+                    <div class="text-xl font-bold text-white mb-1" id="allocationTitle">--</div>
+                    <div class="text-xs text-slate-400" id="allocationDesc">--</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 数据面板区 -->
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+
+        <!-- 1. 核心宏观 (官方数据) -->
+        <div class="card border-t-4 border-t-blue-600">
+            <div class="flex justify-between items-center mb-4">
+                <h2 class="font-bold text-sm text-white flex items-center gap-2">
+                    <span class="w-2 h-2 rounded-full bg-blue-500"></span> 官方宏观数据 (内置)
+                </h2>
+                <span class="text-[10px] text-slate-500">来源: 美联储 FRED</span>
+            </div>
+
+            <!-- 萨姆规则 -->
+            <div class="mb-6">
+                <div class="flex justify-between items-end mb-1">
+                    <span class="metric-label">萨姆规则 (失业率)</span>
+                    <span id="badge_sahm" class="status-badge status-neutral">--</span>
+                </div>
+                <div class="grid grid-cols-2 gap-4 bg-slate-900/50 p-3 rounded border border-slate-700/50">
+                    <div>
+                        <div class="text-[10px] text-slate-500">当前3个月均值</div>
+                        <!-- 预填 4.10% -->
+                        <input type="number" id="inp_sahm_cur" class="input-dark bg-transparent border-none text-lg p-0" readonly value="4.10">
+                    </div>
+                    <div class="text-right border-l border-slate-700 pl-4">
+                        <div class="text-[10px] text-slate-500">过去12月最低</div>
+                        <!-- 预填 3.70% -->
+                        <input type="number" id="inp_sahm_low" class="input-dark bg-transparent border-none text-lg p-0" readonly value="3.70">
+                    </div>
+                </div>
+                <div class="mt-2 text-[10px] text-slate-400 flex justify-between">
+                    <span>反弹幅度: <strong id="val_sahm_diff" class="text-white">--</strong></span>
+                    <span>熔断阈值: <strong>+0.50%</strong></span>
+                </div>
+            </div>
+
+            <!-- 收益率曲线 -->
+            <div class="mb-6">
+                <div class="flex justify-between items-end mb-1">
+                    <span class="metric-label">收益率曲线 (10年 - 2年)</span>
+                    <span id="badge_yield" class="status-badge status-neutral">--</span>
+                </div>
+                <div class="bg-slate-900/50 p-3 rounded border border-slate-700/50">
+                    <div class="flex justify-between items-center mb-2">
+                        <span class="text-xs text-slate-500">利差 (Spread)</span>
+                        <span class="text-xl font-mono font-bold text-white" id="val_yield_spread">--</span>
+                    </div>
+                    <div class="w-full h-1.5 bg-slate-700 rounded overflow-hidden relative">
+                        <div class="absolute left-[30%] top-0 bottom-0 w-0.5 bg-white opacity-30"></div>
+                        <div id="bar_yield" class="absolute top-0 bottom-0 bg-slate-500 transition-all duration-500" style="left: 30%; width: 0%;"></div>
+                    </div>
+                    <!-- 隐藏的输入框用于存储值 -->
+                    <input type="hidden" id="inp_y10" value="4.45">
+                    <input type="hidden" id="inp_y2" value="4.25">
+                </div>
+            </div>
+
+            <!-- 通胀 -->
+            <div>
+                <div class="flex justify-between items-end mb-1">
+                    <span class="metric-label">CPI 通胀率 (同比)</span>
+                    <span id="badge_cpi" class="status-badge status-neutral">--</span>
+                </div>
+                <div class="bg-slate-900/50 p-3 rounded border border-slate-700/50 flex justify-between items-center">
+                    <span class="text-xs text-slate-500">最新值</span>
+                    <!-- 预填 3.2% -->
+                    <input type="number" id="inp_cpi" class="input-dark bg-transparent border-none text-xl p-0 w-24" readonly value="3.2">
+                </div>
+            </div>
+        </div>
+
+        <!-- 2. 市场估值 (半自动) -->
+        <div class="card border-t-4 border-t-purple-600">
+            <div class="flex justify-between items-center mb-4">
+                <h2 class="font-bold text-sm text-white flex items-center gap-2">
+                    <span class="w-2 h-2 rounded-full bg-purple-500"></span> 市场估值 (内置)
+                </h2>
+                <a href="https://www.currentmarketvaluation.com/" target="_blank" class="text-[10px] text-blue-400 hover:underline">核对数据 ↗</a>
+            </div>
+
+            <div class="bg-purple-900/20 border border-purple-700/30 p-3 rounded mb-4 text-[10px] text-purple-300">
+                📊 数据快照 (2026/01/07):<br>巴菲特指标已飙升至 221%，远超 200% 警戒线。
+            </div>
+
+            <!-- 巴菲特指标 -->
+            <div class="mb-6">
+                <div class="flex justify-between items-end mb-1">
+                    <span class="metric-label">巴菲特指标 (总市值/GDP)</span>
+                    <span id="badge_buffett" class="status-badge status-neutral">--</span>
+                </div>
+                <div class="flex items-center gap-2">
+                    <!-- 预填了 221.7 -->
+                    <input type="number" id="inp_buffett" class="input-dark bg-slate-800 border-slate-600 text-lg py-2 font-bold text-purple-400" value="221.7" oninput="calculateRisk()">
+                    <span class="text-sm text-slate-500">%</span>
+                </div>
+                <div class="mt-2 w-full h-1 bg-slate-700 rounded relative">
+                    <div class="absolute left-[25%] top-0 bottom-0 w-0.5 bg-slate-600 h-2 -mt-0.5"></div>
+                    <div class="absolute left-[50%] top-0 bottom-0 w-0.5 bg-slate-600 h-2 -mt-0.5"></div>
+                </div>
+                <div class="flex justify-between text-[9px] text-slate-500 mt-1">
+                    <span>低估</span>
+                    <span>100% (合理)</span>
+                    <span>200% (泡沫)</span>
+                </div>
+            </div>
+
+            <!-- 席勒 PE -->
+            <div>
+                <div class="flex justify-between items-end mb-1">
+                    <span class="metric-label">席勒市盈率 (CAPE)</span>
+                    <a href="https://www.multpl.com/shiller-pe" target="_blank" class="text-[10px] text-blue-400 hover:underline">核对</a>
+                </div>
+                <div class="flex items-center gap-2">
+                    <!-- 预填了 40.83 -->
+                    <input type="number" id="inp_shiller" class="input-dark bg-slate-800 border-slate-600 text-lg py-2 font-bold text-purple-400" value="40.83" oninput="calculateRisk()">
+                    <span class="text-sm text-slate-500">x</span>
+                </div>
+                <div class="mt-2 text-[10px] text-slate-500">
+                    历史均值: ~17x. 危险线 > 35x.
+                </div>
+            </div>
+        </div>
+
+        <!-- 3. 市场情绪 (半自动) -->
+        <div class="card border-t-4 border-t-emerald-600">
+            <div class="flex justify-between items-center mb-4">
+                <h2 class="font-bold text-sm text-white flex items-center gap-2">
+                    <span class="w-2 h-2 rounded-full bg-emerald-500"></span> 市场情绪 (内置)
+                </h2>
+                <a href="https://edition.cnn.com/markets/fear-and-greed" target="_blank" class="text-[10px] text-blue-400 hover:underline">CNN 官网 ↗</a>
+            </div>
+
+            <!-- 恐慌贪婪 -->
+            <div class="mb-6 flex-1 flex flex-col justify-center">
+                <div class="text-center mb-4">
+                    <div class="metric-label">恐慌与贪婪指数</div>
+                    <!-- 预填了 52 -->
+                    <input type="number" id="inp_fear" value="52" class="input-dark bg-transparent border-none text-5xl font-black text-center p-0" oninput="calculateRisk()">
+                    <div id="text_fear" class="text-sm font-bold text-slate-500 mt-2">--</div>
+                </div>
+                
+                <input type="range" id="rng_fear" min="0" max="100" value="52" class="w-full h-2 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-blue-500" oninput="syncFearInput(this.value)">
+                
+                <div class="flex justify-between text-[10px] text-slate-500 mt-2">
+                    <span class="text-emerald-400">0 极恐(买)</span>
+                    <span class="text-red-400">100 极贪(卖)</span>
+                </div>
+            </div>
+
+            <div class="border-t border-slate-700 pt-4">
+                <div class="flex justify-between items-center">
+                    <span class="metric-label">VIX 波动率指数</span>
+                    <input type="number" id="inp_vix" class="input-dark w-20 bg-slate-800 border-slate-600" value="14.9" oninput="calculateRisk()">
+                </div>
+            </div>
+        </div>
+
+    </div>
+
+    <script>
+        // --- 工具函数 ---
+        const getEl = (id) => document.getElementById(id);
+        
+        function syncFearInput(val) {
+            getEl('inp_fear').value = val;
+            calculateRisk();
+        }
+
+        // --- 1. 严格的数据获取 (只连接官方数据源) ---
+        async function fetchOfficialData() {
+            const apiKey = getEl('apiKey').value.trim();
+            const btn = getEl('fetchBtn');
+            const icon = getEl('btnIcon');
+            const statusDiv = getEl('lastUpdate');
+
+            if(!apiKey) { alert("请填写 API 密钥"); return; }
+
+            btn.disabled = true;
+            btn.classList.add('opacity-75');
+            icon.innerText = "⏳";
+            statusDiv.innerText = "正在连接 AlphaVantage...";
+
+            try {
+                // 串行请求以防 429 (免费版限制)
+                const resUnemp = await fetch(`https://www.alphavantage.co/query?function=UNEMPLOYMENT&apikey=${apiKey}`).then(r=>r.json());
+                if(resUnemp.data) processSahm(resUnemp.data);
+                await new Promise(r => setTimeout(r, 1500)); 
+
+                const res10y = await fetch(`https://www.alphavantage.co/query?function=TREASURY_YIELD&interval=monthly&maturity=10year&apikey=${apiKey}`).then(r=>r.json());
+                await new Promise(r => setTimeout(r, 1500));
+
+                const res2y = await fetch(`https://www.alphavantage.co/query?function=TREASURY_YIELD&interval=monthly&maturity=2year&apikey=${apiKey}`).then(r=>r.json());
+                if(res10y.data && res2y.data) processYield(res10y.data, res2y.data);
+                await new Promise(r => setTimeout(r, 1500));
+
+                const resCpi = await fetch(`https://www.alphavantage.co/query?function=CPI&interval=monthly&apikey=${apiKey}`).then(r=>r.json());
+                if(resCpi.data) processCpi(resCpi.data);
+
+                const now = new Date();
+                statusDiv.innerText = `上次同步: ${now.toLocaleTimeString()}`;
+                statusDiv.className = "text-[10px] text-emerald-400 font-mono";
+                
+                calculateRisk(); 
+
+            } catch(e) {
+                console.error(e);
+                statusDiv.innerText = "同步中断 (API限制)";
+                statusDiv.className = "text-[10px] text-red-400 font-mono";
+                alert("网络或API额度受限，部分自动数据可能未更新。手动数据不受影响。");
+            } finally {
+                btn.disabled = false;
+                btn.classList.remove('opacity-75');
+                icon.innerText = "📡";
+            }
+        }
+
+        // --- 数据处理逻辑 ---
+
+        function processSahm(data) {
+            if(data.length < 24) return;
+            const curMA = (parseFloat(data[0].value) + parseFloat(data[1].value) + parseFloat(data[2].value)) / 3;
             let minMA = 100;
             for(let i=0; i<12; i++) {
-                const ma = (parseFloat(d[i].value) + parseFloat(d[i+1].value) + parseFloat(d[i+2].value)) / 3;
+                const ma = (parseFloat(data[i].value) + parseFloat(data[i+1].value) + parseFloat(data[i+2].value)) / 3;
                 if(ma < minMA) minMA = ma;
             }
-            
-            const diff = curMA - minMA;
-            sahmStatus.diff = diff.toFixed(2);
-            
-            if (diff >= 0.5) { sahmStatus.level = "🛑 确认衰退"; sahmStatus.color = "red"; }
-            else if (diff >= 0.4) { sahmStatus.level = "⚠️ 高危预警"; sahmStatus.color = "orange"; }
-            else { sahmStatus.level = "🟢 就业安全"; sahmStatus.color = "green"; }
+            getEl('inp_sahm_cur').value = curMA.toFixed(2);
+            getEl('inp_sahm_low').value = minMA.toFixed(2);
         }
 
-        // B. 计算收益率曲线
-        if (res10y && res10y.data && res2y && res2y.data) {
-            const y10 = parseFloat(res10y.data[0].value);
-            const y2 = parseFloat(res2y.data[0].value);
-            const spread = y10 - y2;
-            yieldStatus.spread = spread.toFixed(2);
-            
-            if (spread < 0) { yieldStatus.level = "⚠️ 倒挂警示"; yieldStatus.color = "orange"; }
-            else if (spread < 0.3) { yieldStatus.level = "⚖️ 观察区"; yieldStatus.color = "grey"; }
-            else { yieldStatus.level = "🟢 正常"; yieldStatus.color = "green"; }
+        function processYield(d10, d2) {
+            const y10 = parseFloat(d10[0].value);
+            const y2 = parseFloat(d2[0].value);
+            getEl('val_yield_spread').dataset.y10 = y10;
+            getEl('val_yield_spread').dataset.y2 = y2;
+            getEl('val_yield_spread').innerText = (y10 - y2).toFixed(2) + "%";
         }
 
-        return { sahm: sahmStatus, yield: yieldStatus, success: true };
+        function processCpi(data) {
+            if(data.length < 13) return;
+            const cur = parseFloat(data[0].value);
+            const prevYear = parseFloat(data[12].value);
+            const yoy = ((cur - prevYear) / prevYear) * 100;
+            getEl('inp_cpi').value = yoy.toFixed(2);
+        }
 
-    } catch (e) {
-        console.error("宏观数据获取失败:", e);
-        return { success: false };
-    }
-};
+        // --- 风控模型 (Risk Engine) ---
 
-// ================= 3. 飞书消息推送 =================
-const sendMacroReport = async (macroData) => {
-    if (!CONFIG.FEISHU_WEBHOOK || !macroData.success) return;
+        function calculateRisk() {
+            // 1. 获取所有数值 (来自预填或 API)
+            const sahmCur = parseFloat(getEl('inp_sahm_cur').value);
+            const sahmLow = parseFloat(getEl('inp_sahm_low').value);
+            const sahmDiff = (!isNaN(sahmCur) && !isNaN(sahmLow)) ? (sahmCur - sahmLow) : null;
 
-    const { sahm, yield: yld } = macroData;
-    
-    // 决定卡片颜色：有红色警报就变红，否则看是否橙色，默认蓝色
-    let cardColor = "blue";
-    if (sahm.color === "red" || yld.color === "red") cardColor = "red";
-    else if (sahm.color === "orange" || yld.color === "orange") cardColor = "orange";
+            // 利差计算
+            const y10 = parseFloat(getEl('inp_y10').value);
+            const y2 = parseFloat(getEl('inp_y2').value);
+            const ySpread = (!isNaN(y10) && !isNaN(y2)) ? (y10 - y2) : null;
 
-    const content = {
-        "msg_type": "interactive",
-        "card": {
-            "config": { "wide_screen_mode": true },
-            "header": { "title": { "tag": "plain_text", "content": "📅 宏观全景晨报" }, "template": cardColor },
-            "elements": [
-                {
-                    "tag": "div",
-                    "fields": [
-                        { "is_short": true, "text": { "tag": "lark_md", "content": `**萨姆规则 (失业):**\n${sahm.level} (+${sahm.diff}%)` } },
-                        { "is_short": true, "text": { "tag": "lark_md", "content": `**美债利差 (10-2):**\n${yld.level} (${yld.spread}%)` } }
-                    ]
-                },
-                { "tag": "hr" },
-                {
-                    "tag": "action",
-                    "actions": [
-                        {
-                            "tag": "button",
-                            "text": { "tag": "plain_text", "content": "🛸 打开全景指挥台 (仪表盘)" },
-                            "type": "primary",
-                            "url": CONFIG.DASHBOARD_URL || "https://github.com" 
-                        }
-                    ]
-                },
-                {
-                    "tag": "note",
-                    "elements": [{ "tag": "plain_text", "content": "注：估值/情绪指标请点击按钮在网页中查看" }]
+            const cpi = parseFloat(getEl('inp_cpi').value);
+            
+            const buffett = parseFloat(getEl('inp_buffett').value); 
+            const fear = parseFloat(getEl('inp_fear').value); 
+
+            // 1. Sahm UI
+            if (sahmDiff !== null) {
+                const elDiff = getEl('val_sahm_diff');
+                elDiff.innerText = (sahmDiff > 0 ? "+" : "") + sahmDiff.toFixed(2) + "%";
+                elDiff.className = sahmDiff >= 0.5 ? "text-red-500 font-bold animate-pulse" : (sahmDiff >= 0.4 ? "text-yellow-400 font-bold" : "text-emerald-400 font-bold");
+                
+                const badge = getEl('badge_sahm');
+                if(sahmDiff >= 0.5) { badge.className="status-badge status-danger"; badge.innerText="衰退确认"; }
+                else if(sahmDiff >= 0.4) { badge.className="status-badge status-warn"; badge.innerText="高危预警"; }
+                else { badge.className="status-badge status-safe"; badge.innerText="安全"; }
+            }
+
+            // 2. Yield UI
+            if (ySpread !== null) {
+                const bar = getEl('bar_yield');
+                const badge = getEl('badge_yield');
+                getEl('val_yield_spread').innerText = (ySpread > 0 ? "+" : "") + ySpread.toFixed(2) + "%";
+
+                let pct = ((ySpread + 1.0) / 3.0) * 100;
+                pct = Math.max(0, Math.min(100, pct));
+                
+                bar.style.left = ySpread >= 0 ? "30%" : `${pct}%`;
+                bar.style.width = ySpread >= 0 ? `${pct - 30}%` : `${30 - pct}%`;
+                bar.style.backgroundColor = ySpread < 0 ? "#ef4444" : (ySpread < 0.3 ? "#eab308" : "#10b981");
+
+                if(ySpread < 0) { badge.className="status-badge status-danger"; badge.innerText="倒挂"; }
+                else if(ySpread < 0.3) { badge.className="status-badge status-warn"; badge.innerText="扁平/回正"; }
+                else { badge.className="status-badge status-safe"; badge.innerText="正常"; }
+            }
+
+            // 3. Fear UI
+            if (!isNaN(fear)) {
+                getEl('rng_fear').value = fear;
+                const txt = getEl('text_fear');
+                if(fear < 25) { txt.innerText = "极度恐慌 (买入)"; txt.className="text-sm font-bold text-emerald-400"; }
+                else if(fear > 75) { txt.innerText = "极度贪婪 (卖出)"; txt.className="text-sm font-bold text-red-400"; }
+                else { txt.innerText = "中性"; txt.className="text-sm font-bold text-slate-400"; }
+            }
+            
+            // 4. Buffett UI
+            if (!isNaN(buffett)) {
+                const badge = getEl('badge_buffett');
+                if (buffett > 200) { badge.className="status-badge status-danger"; badge.innerText="严重泡沫"; }
+                else if (buffett > 150) { badge.className="status-badge status-warn"; badge.innerText="显著高估"; }
+                else { badge.className="status-badge status-safe"; badge.innerText="合理"; }
+            }
+            
+            // 5. CPI UI
+            if (!isNaN(cpi)) {
+                const badge = getEl('badge_cpi');
+                if (cpi > 4.0) { badge.className="status-badge status-danger"; badge.innerText="恶性通胀"; }
+                else if (cpi > 3.0) { badge.className="status-badge status-warn"; badge.innerText="粘性通胀"; }
+                else { badge.className="status-badge status-safe"; badge.innerText="温和"; }
+            }
+
+            // --- 评分逻辑 ---
+            let riskLevel = "SAFE"; 
+            let vetoReason = "";
+
+            // 熔断 1: 萨姆规则
+            if (sahmDiff !== null && sahmDiff >= 0.50) {
+                riskLevel = "CRITICAL";
+                vetoReason = "萨姆规则触发 (+0.5%)";
+            }
+            
+            // 熔断 2: 利差深度倒挂或回正
+            if (riskLevel !== "CRITICAL" && ySpread !== null) {
+                if (ySpread < -0.2) { riskLevel = "DANGER"; vetoReason = "深度倒挂"; }
+                else if (ySpread >= 0 && ySpread < 0.2) { riskLevel = "DANGER"; vetoReason = "倒挂回正 (衰退前兆)"; }
+            }
+
+            // 熔断 3: 通胀
+            if (riskLevel !== "CRITICAL" && !isNaN(cpi) && cpi > 5.0) {
+                riskLevel = "DANGER"; vetoReason = "高通胀 (>5%)";
+            }
+
+            // 估值降权
+            if (riskLevel === "SAFE" || riskLevel === "CAUTION") {
+                if (buffett > 180) riskLevel = "CAUTION"; 
+                if (fear > 90) riskLevel = "CAUTION";    
+            }
+
+            const elTitle = getEl('globalRiskTitle');
+            const elDesc = getEl('globalRiskDesc');
+            const elAllocT = getEl('allocationTitle');
+            const elAllocD = getEl('allocationDesc');
+            const card = getEl('globalRiskTitle').parentElement.parentElement.parentElement; 
+
+            if (riskLevel === "CRITICAL") {
+                elTitle.innerText = "🔴 严重熔断";
+                elTitle.className = "text-4xl font-black text-red-500 animate-pulse";
+                elDesc.innerText = `熔断触发: ${vetoReason}`;
+                elAllocT.innerText = "0% - 10% (空仓)";
+                elAllocD.innerText = "宏观崩坏，经济衰退确认。切勿接飞刀。";
+                card.style.borderLeftColor = "#ef4444"; 
+            } 
+            else if (riskLevel === "DANGER") {
+                elTitle.innerText = "🟠 危险区域";
+                elTitle.className = "text-4xl font-black text-orange-500";
+                elDesc.innerText = `警告: ${vetoReason || "多重风险叠加"}`;
+                elAllocT.innerText = "20% - 30% (防守)";
+                elAllocD.innerText = "大幅减仓，保留核心底仓，停止买入。";
+                card.style.borderLeftColor = "#f97316"; 
+            }
+            else if (riskLevel === "CAUTION") {
+                elTitle.innerText = "🟡 需警惕";
+                elTitle.className = "text-4xl font-black text-yellow-400";
+                elDesc.innerText = "风险累积 (估值过高)";
+                elAllocT.innerText = "40% - 50% (中性)";
+                elAllocD.innerText = "暂停激进加仓，维持定投。";
+                card.style.borderLeftColor = "#eab308"; 
+            }
+            else {
+                elTitle.innerText = "🟢 宏观安全";
+                elTitle.className = "text-4xl font-black text-emerald-400";
+                elDesc.innerText = "基本面健康";
+                if (!isNaN(fear) && fear < 25) {
+                    elAllocT.innerText = "80% - 100% (进攻)";
+                    elAllocD.innerText = "宏观安全 + 市场恐慌 = 黄金坑。";
+                } else {
+                    elAllocT.innerText = "60% - 70% (成长)";
+                    elAllocD.innerText = "环境温和，按个股信号操作。";
                 }
-            ]
+                card.style.borderLeftColor = "#10b981"; 
+            }
         }
-    };
-
-    await fetch(CONFIG.FEISHU_WEBHOOK, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(content) });
-    console.log("✅ 宏观晨报已发送");
-};
-
-// ================= 4. 个股扫描逻辑 (简化版引用) =================
-// ... 这里保留你之前的 getSmartGrowthInputs, calculateScenarios, analyzeETF 等函数 ...
-// ... 为了节省篇幅，请把你 V5.6 版本的中间逻辑保留在这里 ...
-
-// 模拟的个股扫描函数占位符，实际请保留原代码
-const scanStocks = async () => { console.log("开始扫描个股..."); /* 原有个股逻辑 */ };
-
-
-// ================= 5. 主程序入口 =================
-const main = async () => {
-    console.log("=== AlphaSystem V6.0 启动 ===");
-
-    // 1. 先进行宏观体检 & 推送晨报
-    // 逻辑：每次运行都检查宏观，但只有在特定时间（比如每天第一次运行）或者宏观有剧变时才推送
-    // 简单起见，这里每次运行都检查，但在 GitHub Action 里你可以通过 Schedule 控制只在早上8点运行一次专门的宏观 Job
-    // 或者我们简单点：每次运行都计算，把结果打印出来，如果有“红色警报”才强制推，否则只在日志显示。
-    
-    const macro = await analyzeMacro();
-    
-    // 策略：如果宏观有风险 (非绿色)，每次都提醒。如果是安全的，只在日志记录，不骚扰。
-    // 你也可以改为：每次都推 (取消下面的注释)
-    
-    if (macro.success) {
-        console.log(`📊 宏观状态: 萨姆[${macro.sahm.level}] | 利差[${macro.yield.level}]`);
         
-        // 🚨 触发条件：有红色/橙色警报，或者你希望每天必推
-        const hasRisk = macro.sahm.color !== "green" || macro.yield.color !== "green";
-        
-        // 如果想每天必推，就把 if (hasRisk) 去掉，直接调用 sendMacroReport
-        if (hasRisk) { 
-            await sendMacroReport(macro);
-        } else {
-            console.log("🟢 宏观环境安全，暂不推送警报");
-        }
-    }
-
-    // 2. 执行个股扫描 (原来的核心逻辑)
-    // 请确保这里调用了你之前的个股循环逻辑
-    // await scanStocks(); 
-    
-    // (由于你之前的代码很长，这里我只写了宏观部分。
-    // 请把你 V5.6 版本中 main() 函数里 "1. 飞书鉴权" 往后的所有代码，
-    // 粘贴在这个位置，替换掉 await scanStocks())
-};
-
-main().catch(e => { console.error(e); process.exit(1); });
+        // 初始计算，让预填数据生效
+        setTimeout(calculateRisk, 500);
+    </script>
+</body>
+</html>
