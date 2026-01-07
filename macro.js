@@ -15,7 +15,7 @@ const CONFIG = {
     
     // 你的仪表盘链接 (推送卡片里的跳转链接)
     // ⚠️ 请替换为你实际的 GitHub Pages 或 Netlify 链接
-    DASHBOARD_URL: "https://你的用户名.github.io/你的仓库名/" 
+    DASHBOARD_URL: "https://sd237720488-a11y.github.io/my-stock-bot/" 
 };
 
 // ================= 工具函数 =================
