@@ -1,4 +1,4 @@
-// macro.js - 宏观风控哨兵 (V2.0 全维监控版)
+// macro.js - 宏观风控哨兵 (V2.1 日期增强版)
 // 功能：每日抓取 宏观(衰退)+估值(泡沫)+情绪(恐慌) 三大维度，推送到飞书
 
 const https = require('https');
@@ -9,7 +9,7 @@ if (!globalThis.fetch) { console.error("请使用 Node 20+"); process.exit(1); }
 const CONFIG = {
     FEISHU_WEBHOOK: process.env.FEISHU_WEBHOOK, 
     ALPHAVANTAGE_KEY: process.env.ALPHAVANTAGE_KEY || "O0VQP18WF8I5N66X",
-    DASHBOARD_URL: "https://你的用户名.github.io/你的仓库名/" // 请替换为你的网页链接
+    DASHBOARD_URL: "https://sd237720488-a11y.github.io/my-stock-bot/" // 请替换为你的网页链接
 };
 
 // ================= 工具函数 =================
@@ -123,11 +123,14 @@ const runAnalysis = async () => {
 const pushFeishu = async (data) => {
     if (!CONFIG.FEISHU_WEBHOOK || !data) return;
 
+    // 获取当前日期 YYYY-MM-DD
+    const dateStr = new Date().toISOString().split('T')[0];
+
     let headerColor = "green";
-    let titleText = "🟢 宏观安全日报";
+    let titleText = `🟢 宏观安全日报 (${dateStr})`;
     
-    if (data.riskLevel === "HIGH") { headerColor = "red"; titleText = "🚨 红色警报：宏观恶化"; }
-    else if (data.riskLevel === "MEDIUM") { headerColor = "orange"; titleText = "⚠️ 橙色预警：风险上升"; }
+    if (data.riskLevel === "HIGH") { headerColor = "red"; titleText = `🚨 红色警报：宏观恶化 (${dateStr})`; }
+    else if (data.riskLevel === "MEDIUM") { headerColor = "orange"; titleText = `⚠️ 橙色预警：风险上升 (${dateStr})`; }
 
     const card = {
         "msg_type": "interactive",
