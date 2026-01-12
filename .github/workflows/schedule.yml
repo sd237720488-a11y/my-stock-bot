@@ -37,7 +37,16 @@ jobs:
           FEISHU_WEBHOOK: ${{ secrets.FEISHU_WEBHOOK }}
           ALPHAVANTAGE_KEY: ${{ secrets.ALPHAVANTAGE_KEY }}
         run: node macro.js
+# ... (前面是 Run Macro Sentinel)
 
+      # 3. 运行每日运势 (新增)
+      - name: Run Daily Fortune
+        if: github.event.schedule == '0 0 * * *' || github.event_name != 'schedule'
+        env:
+          FEISHU_WEBHOOK: ${{ secrets.FEISHU_WEBHOOK }}
+        run: node fortune.js
+
+      # ... (后面是 Run Stock Scanner)
       # --- 步骤 2: 个股扫描机器人 (总是运行) ---
       - name: Run Stock Scanner
         env:
@@ -51,3 +60,4 @@ jobs:
           FINNHUB_KEY: ${{ secrets.FINNHUB_KEY }}
           ALPHAVANTAGE_KEY: ${{ secrets.ALPHAVANTAGE_KEY }}
         run: node bot.js
+
