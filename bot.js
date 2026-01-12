@@ -1,13 +1,11 @@
-// bot.js - AlphaSystem 云端机器人 (V5.5 最终防崩版)
-// 修复：兼容性检测增强、超时延长至30秒、JSON解析防御
+// bot.js - AlphaSystem 云端机器人 (V5.9 多维透视版)
+// 功能：新增[缺口/趋势/量能]独立列、心跳报告、完整逻辑校验
 
 const https = require('https');
 
 // ================= 0. 环境自检 =================
-// 核心修复：同时检查 fetch 和 AbortController
 if (!globalThis.fetch || !globalThis.AbortController) {
-    console.error("❌ 错误: 当前 Node 版本过低。请确保 main.yml 中使用 node-version: '20'");
-    console.error("   提示: Node 18+ 才支持原生 fetch 和 AbortController");
+    console.error("❌ 错误: 请升级 Node 版本至 20+");
     process.exit(1);
 }
 
@@ -21,40 +19,28 @@ const CONFIG = {
     FINNHUB_KEY: process.env.FINNHUB_KEY,
     WEB_URL: "http://localhost:5173" 
 };
-// ================= ETF 名单配置 =================
-// 这些代码将走 "回撤交易策略"，不走 PEG 估值
+
+// ETF 名单 (走回撤策略)
 const ETF_LIST = ['QQQ', 'TQQQ', 'VOO', 'SPY', 'IVV', 'SMH', 'SOXX', 'VGT', 'XLK', 'DIA', 'IWM'];
 
 // ================= 2. 辅助函数 =================
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
-// 网络请求封装 (核心修复：30s超时 + JSON安全解析)
 const fetchJson = async (url, options = {}) => {
-    // 修复：延长超时时间到 30秒，防止 CI 环境网络波动导致的崩溃
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 30000);
-    
+    const timeoutId = setTimeout(() => controller.abort(), 30000); // 30s超时
     try {
         const res = await fetch(url, { ...options, signal: controller.signal });
         clearTimeout(timeoutId);
-        
         if (!res.ok) {
-            const errorText = await res.text();
-            // 截断错误信息，防止日志过长
-            throw new Error(`HTTP ${res.status} - ${errorText.slice(0, 100)}`);
+            const txt = await res.text();
+            throw new Error(`HTTP ${res.status} - ${txt.slice(0, 100)}`);
         }
-
-        // 修复：防止 API 返回空内容或非 JSON 导致 crash
         const text = await res.text();
-        try {
-            return text ? JSON.parse(text) : {};
-        } catch (e) {
-            console.warn(`⚠️ 警告: 返回内容不是 JSON (${url.slice(0, 20)}...)`);
-            return {};
-        }
+        try { return text ? JSON.parse(text) : {}; } 
+        catch (e) { console.warn("JSON解析失败"); return {}; }
     } catch (e) {
         clearTimeout(timeoutId);
-        if (e.name === 'AbortError') throw new Error("请求超时 (30s)");
         throw e;
     }
 };
@@ -62,12 +48,11 @@ const fetchJson = async (url, options = {}) => {
 const getVal = (val, d = 2) => {
     if (val === null || val === undefined || val === '') return 0;
     const num = parseFloat(val);
-    if (isNaN(num) || !isFinite(num)) return 0;
-    return parseFloat(num.toFixed(d));
+    return (isNaN(num) || !isFinite(num)) ? 0 : parseFloat(num.toFixed(d));
 };
 
 const getRiskLevel = (score) => {
-    if (!score && score !== 0) return "-";
+    if (!score) return "-";
     if (score <= 20) return "边际极高";
     if (score <= 40) return "边际充足";
     if (score <= 60) return "风险适中";
@@ -75,6 +60,7 @@ const getRiskLevel = (score) => {
     return "高波动";
 };
 
+// 飞书报警 (个股机会)
 const sendFeishuAlert = async (symbol, price, signalType, detail) => {
     if (!CONFIG.FEISHU_WEBHOOK) return;
     const color = signalType.includes("击球") ? "green" : "blue";
@@ -94,48 +80,58 @@ const sendFeishuAlert = async (symbol, price, signalType, detail) => {
     catch (e) { console.error("报警发送失败", e.message); }
 };
 
-// ================= 3. 核心算法 (同步 React 逻辑) =================
+// 💓 心跳报告 (任务总结)
+const sendHeartbeat = async (total, updated, skipped, errors) => {
+    if (!CONFIG.FEISHU_WEBHOOK) return;
+    const isSilent = updated === 0 && errors === 0;
+    if (isSilent) return;
 
-// 3.1 智能增速判断
+    const color = errors > 0 ? "red" : "grey"; 
+    const title = errors > 0 ? "AlphaSystem 运行有误" : "AlphaSystem 巡逻完成";
+
+    const cardContent = {
+        "msg_type": "interactive",
+        "card": {
+            "config": { "wide_screen_mode": true },
+            "header": { "title": { "tag": "plain_text", "content": title }, "template": color },
+            "elements": [
+                { "tag": "div", "text": { "tag": "lark_md", "content": `📊 **扫描:** ${total} | ✅ **更新:** ${updated}\n⏭️ **跳过:** ${skipped} | ❌ **失败:** ${errors}` } }
+            ]
+        }
+    };
+    try { await fetch(CONFIG.FEISHU_WEBHOOK, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(cardContent) }); } 
+    catch (e) { console.error("心跳发送失败", e.message); }
+};
+
+// ================= 3. 核心算法 =================
+
+// 3.1 智能增速
 const getSmartGrowthInputs = (stock) => {
-    const metric = stock.metricRaw || {};
-    const growthTTM = parseFloat(metric.epsGrowthTTMYoy) || 0;
+    const m = stock.metricRaw || {};
+    const growthTTM = parseFloat(m.epsGrowthTTMYoy) || 0;
     const pastG = parseFloat(stock.metricGrowth5Y) || 0;
-    const qtrRevGrowth = parseFloat(metric.revenueGrowthQuarterlyYoy) || 0;
-    const revGrowthTTM = parseFloat(metric.revenueGrowthTTMYoy) || 0;
-    const revGrowth5Y = parseFloat(metric.revenueGrowth5Y) || 0;
+    const qtrRevG = parseFloat(m.revenueGrowthQuarterlyYoy) || 0;
+    const revTTM = parseFloat(m.revenueGrowthTTMYoy) || 0;
+    const rev5Y = parseFloat(m.revenueGrowth5Y) || 0;
 
-    // 亏损判断
-    const isLoss = !metric.epsTTM || metric.epsTTM <= 0;
-    const showRevenueTrend = isLoss || (metric.epsGrowthTTMYoy === null);
+    const isLoss = !stock.metricEPS || stock.metricEPS <= 0;
+    let val = 8;
 
-    let defaultGrowthVal = 8;
-
-    if (showRevenueTrend) {
-        // 取 TTM 和 季度营收 的最大值
-        const recentRevMax = Math.max(revGrowthTTM, qtrRevGrowth);
-        if (recentRevMax > 0) {
-            defaultGrowthVal = Math.min(recentRevMax, 50); 
-        } else if (!isNaN(revGrowth5Y)) {
-            defaultGrowthVal = revGrowth5Y;
-        }
+    if (isLoss || m.epsGrowthTTMYoy === null) {
+        const maxRev = Math.max(revTTM, qtrRevG);
+        val = maxRev > 0 ? Math.min(maxRev, 50) : (rev5Y || 5);
     } else {
-        // 盈利股逻辑
-        if (growthTTM > 0 && growthTTM > pastG + 10) {
-            defaultGrowthVal = Math.min(growthTTM, 50);
-        } else {
-            defaultGrowthVal = (pastG > -50 ? pastG : 5);
-        }
+        if (growthTTM > 0 && growthTTM > pastG + 10) val = Math.min(growthTTM, 50);
+        else val = (pastG > -50 ? pastG : 5);
     }
-    return { defaultGrowthVal, isLoss };
+    return { defaultGrowthVal: val };
 };
 
 // 3.2 估值引擎
 const calculateScenarios = (baseInputs, currentPrice) => {
-    const { eps, growthRate, peRatio, riskFreeRate=4.5, roe=0, pastGrowth=0, qtrEpsGrowth=0 } = baseInputs; 
+    const { eps, growthRate, peRatio, riskFreeRate=4.5, roe=0, qtrEpsGrowth=0, pastGrowth=0 } = baseInputs; 
     let g = Math.min(Number(growthRate) || 0, 50);
-    
-    // A. 亏损股特判
+
     if (!eps || eps <= 0) {
         if (g > 25) return { conclusion: "🔥 困境反转", riskValue: 40, peg: 0, bearPrice:0, basePrice:0, bullPrice:0 };
         return { conclusion: "☠️ 垃圾/亏损", riskValue: 99, peg: 0, bearPrice:0, basePrice:0, bullPrice:0 };
@@ -145,14 +141,8 @@ const calculateScenarios = (baseInputs, currentPrice) => {
     let bullMult = 1.2;
     let bearDisc = 0.8;
 
-    // B. 动态调整
-    if (g < 5 && targetPE > 15) targetPE = 12; // 熔断
-
-    const isAccelerating = qtrEpsGrowth > (pastGrowth + 15);
-    if (isAccelerating) {
-        bullMult += 0.3;
-        g = Math.max(g, qtrEpsGrowth * 0.8); 
-    }
+    if (g < 5 && targetPE > 15) targetPE = 12; 
+    if (qtrEpsGrowth > pastGrowth + 15) { bullMult += 0.3; g = Math.max(g, qtrEpsGrowth * 0.8); }
 
     let valuationDrag = 1.0;
     if (targetPE * riskFreeRate > 100) valuationDrag = Math.max(0.75, Math.sqrt(100 / (targetPE * riskFreeRate)));
@@ -174,235 +164,173 @@ const calculateScenarios = (baseInputs, currentPrice) => {
     else if (currentPrice > bullPrice) conclusion = "🔴 非理性繁荣";
 
     let valScore = currentPrice < bearPrice ? 50 : (currentPrice > bullPrice ? 0 : 50 * (1 - ((currentPrice - bearPrice) / (bullPrice - bearPrice))));
-    let qualityScore = Math.min(Math.max(roe, 0), 30);
-    let growthScore = peg < 1.0 ? 20 : (peg > 3.0 ? 0 : 20 * ((3 - peg) / 2));
-    let riskValue = 100 - (valScore + qualityScore + growthScore);
+    let riskValue = 100 - (valScore + Math.min(Math.max(roe, 0), 30) + (peg < 1 ? 20 : 0));
 
     return { peg, riskValue, conclusion, bearPrice, basePrice, bullPrice };
 };
-// ================= ETF 专用分析引擎 (回撤交易法) =================
+
+// 3.3 ETF 策略
 const analyzeETF = (price, metric) => {
-    // 1. 获取关键技术位
     const high52 = parseFloat(metric['52WeekHigh']);
-    const low52 = parseFloat(metric['52WeekLow']);
-    const ma50 = parseFloat(metric['50DayAverage']); // Finnhub 免费版可能不一定有MA，如果没有就降级用回撤
+    if (!high52) return { conclusion: "数据不足", riskValue: 50 };
     
-    if (!high52) return { conclusion: "⚠️ 数据不足", riskValue: 50, signal: "观望" };
-
-    // 2. 计算回撤幅度 (Drawdown)
-    // 0 表示最高点，-0.1 表示跌了 10%
-    const drawdown = (price - high52) / high52;
-    const dropPercent = (Math.abs(drawdown) * 100).toFixed(1);
-
-    // 3. 制定策略 (基于美股长牛特征)
-    let conclusion = "";
-    let riskValue = 50;
-    let signal = "";
-    let buyAdvice = "";
-
-    if (drawdown > -0.03) {
-        // 跌幅小于 3% (处于历史高位附近)
-        conclusion = "🔥 历史高位 (强趋势)";
-        riskValue = 80; // 追高有风险
-        signal = "定投/持有";
-        buyAdvice = "切勿一把梭，保持定投，警惕回调";
-    } 
-    else if (drawdown > -0.08) {
-        // 跌幅 3% - 8% (正常呼吸回调)
-        conclusion = "📉 健康回调";
-        riskValue = 60;
-        signal = "加码定投";
-        buyAdvice = "倒车接人，适合加大定投倍数";
-    } 
-    else if (drawdown > -0.15) {
-        // 跌幅 8% - 15% (黄金坑 - 往往是纳指的中期底)
-        conclusion = "💰 黄金坑 (中期底)";
-        riskValue = 30; // 风险释放了一大半
-        signal = "重仓买入";
-        buyAdvice = "难得的捡钱机会，大单买入";
-    } 
-    else if (drawdown > -0.25) {
-        // 跌幅 15% - 25% (技术性熊市)
-        conclusion = "🐻 熊市区域";
-        riskValue = 20;
-        signal = "越跌越买";
-        buyAdvice = "分批抄底，每跌 3% 加一倍仓位";
-    } 
-    else {
-        // 跌幅 > 25% (危机模式)
-        conclusion = "☠️ 极度恐慌";
-        riskValue = 10; // 遍地黄金
-        signal = "全仓/杠杆";
-        buyAdvice = "如果是标普/纳指，此时是改变命运的机会";
-    }
-
-    // 格式化输出，为了适配飞书那个三栏估值，我们伪造一下数据
-    // 悲观 = 回撤20%的价格，合理 = 回撤10%的价格，乐观 = 前高
-    return {
-        conclusion: `${conclusion} (回撤-${dropPercent}%)`,
-        riskValue: riskValue,
-        timing: signal, // 借用择时字段
-        detail: buyAdvice,
-        // 伪造估值数据供显示
-        bearPrice: high52 * 0.8,  // 跌20%是底
-        basePrice: high52 * 0.9,  // 跌10%是合理
-        bullPrice: high52,        // 前高是阻力
-        peg: 0 // ETF 不看 PEG
-    };
+    const dd = (price - high52) / high52;
+    let conc = "", risk = 50, sig = "", tip = "";
+    
+    if (dd > -0.03) { conc = "🔥 历史高位"; risk = 80; sig = "定投"; tip = "勿梭哈"; }
+    else if (dd > -0.08) { conc = "📉 健康回调"; risk = 60; sig = "加码"; tip = "倒车接人"; }
+    else if (dd > -0.15) { conc = "💰 黄金坑"; risk = 30; sig = "重仓"; tip = "捡钱机会"; }
+    else { conc = "🐻 熊市区域"; risk = 20; sig = "越跌越买"; tip = "分批抄底"; }
+    
+    return { conclusion: `${conc} (${(dd*100).toFixed(1)}%)`, riskValue: risk, timing: sig, detail: tip, bearPrice: high52*0.8, basePrice: high52*0.9, bullPrice: high52, peg: 0 };
 };
-// ================= 4. 主程序 (带异常捕获) =================
-const main = async () => {
-    console.log("=== AlphaSystem V5.5 (Final Safe) 启动 ===");
-    
-    // 检查关键密钥
-    if (!CONFIG.FINNHUB_KEY || !CONFIG.FEISHU_APP_ID) {
-        throw new Error("❌ 缺失关键环境变量 (FINNHUB_KEY 或 FEISHU_APP_ID)，请在 Secrets 中配置");
-    }
 
-    // 1. 飞书鉴权
+// ================= 4. 主程序 =================
+const main = async () => {
+    console.log("=== AlphaSystem V5.9 启动 ===");
+
+    // 1. 鉴权
+    if (!CONFIG.FINNHUB_KEY) throw new Error("缺少 FINNHUB_KEY");
     const auth = await fetchJson('https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal', {
         method: 'POST', headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({ "app_id": CONFIG.FEISHU_APP_ID, "app_secret": CONFIG.FEISHU_APP_SECRET })
     });
     const token = auth.tenant_access_token;
-    if (!token) throw new Error("飞书鉴权失败，Token 为空");
+    if (!token) throw new Error("飞书鉴权失败");
 
-    // 2. 获取股票列表
-    const listUrl = `https://open.feishu.cn/open-apis/bitable/v1/apps/${CONFIG.FEISHU_APP_TOKEN}/tables/${CONFIG.FEISHU_TABLE_ID}/records?page_size=500`;
-    const listRes = await fetchJson(listUrl, { headers: { 'Authorization': `Bearer ${token}` } });
+    // 2. 扫表
+    const listRes = await fetchJson(`https://open.feishu.cn/open-apis/bitable/v1/apps/${CONFIG.FEISHU_APP_TOKEN}/tables/${CONFIG.FEISHU_TABLE_ID}/records?page_size=500`, { headers: { 'Authorization': `Bearer ${token}` } });
     const stocks = listRes.data?.items || [];
-    console.log(`📡 扫描到 ${stocks.length} 只股票...`);
+    console.log(`📡 扫描 ${stocks.length} 只股票...`);
 
-    let count = 0;
+    let count = 0, skipped = 0, errors = 0;
     
-    // 3. 循环处理
+    // 3. 循环
     for (let s of stocks) {
         const symbol = (s.fields['代码'] || s.fields.symbol || "").toUpperCase();
         if (!symbol) continue;
 
-        // 智能跳过 (1小时)
-        const lastModified = parseInt(s.last_modified_time || 0);
-        const now = Date.now();
-        const diffHours = (now - lastModified) / (1000 * 60 * 60);
-        const currentPriceField = s.fields['现价']; 
-        const hasPrice = currentPriceField !== undefined && currentPriceField !== null && Number(currentPriceField) > 0;
-        
-        if (hasPrice && diffHours < 1.0) {
-            console.log(`   ⏭️ [跳过] ${symbol}: ${diffHours.toFixed(2)}h 前已更`);
-            continue; 
+        // 跳过逻辑
+        const lastMod = parseInt(s.last_modified_time || 0);
+        if (s.fields['现价'] > 0 && (Date.now() - lastMod < 3600000)) {
+            console.log(`   ⏭️ [跳过] ${symbol}`); skipped++; continue;
         }
 
         console.log(`Processing: ${symbol}...`);
 
         try {
-            // A. 获取 Finnhub
-            const q = await fetchJson(`https://finnhub.io/api/v1/quote?symbol=${symbol}&token=${CONFIG.FINNHUB_KEY}`).catch(() => ({}));
-            // 加速: 并行获取 metric
-            const mPromise = fetchJson(`https://finnhub.io/api/v1/stock/metric?symbol=${symbol}&metric=all&token=${CONFIG.FINNHUB_KEY}`).catch(() => ({}));
-            
-            if (!q.c) { console.log(`   ⚠️ ${symbol}: 暂无价格`); await sleep(500); continue; }
-            const m = await mPromise; // 等待 metric
-            
+            // A. 数据获取
+            const q = await fetchJson(`https://finnhub.io/api/v1/quote?symbol=${symbol}&token=${CONFIG.FINNHUB_KEY}`);
+            if (!q.c) { console.log("   ⚠️ 无价格"); continue; }
+            const metricRes = await fetchJson(`https://finnhub.io/api/v1/stock/metric?symbol=${symbol}&metric=all&token=${CONFIG.FINNHUB_KEY}`);
+            const metric = metricRes.metric || {};
             const price = q.c;
-            const metric = m.metric || {};
-            const metricGrowth5Y = metric.epsGrowth5Y || 0;
-            
-            // B. 计算
-          // ================= 核心修改：区分个股与 ETF =================
-            let norm, stress;
-            
-            // 检查是否在 ETF 名单中
+
+            // B. 基础计算
+            let norm, stress, timing = "⏳ 盘整中", timingDetail = "";
+            let tagGap = "-", tagMa = "-", tagVol = "-"; // 默认值
+
             const isETF = ETF_LIST.includes(symbol);
 
             if (isETF) {
-                console.log(`   📊 [ETF模式] 分析 ${symbol}...`);
-                // 1. 运行 ETF 专用策略
-                const etfResult = analyzeETF(price, metric);
-                
-                // 2. 格式对齐 (为了让下面的写入飞书逻辑通用)
-                norm = {
-                    peg: 0, // ETF不显示PEG
-                    riskValue: etfResult.riskValue,
-                    conclusion: etfResult.conclusion,
-                    bearPrice: etfResult.bearPrice,
-                    basePrice: etfResult.basePrice,
-                    bullPrice: etfResult.bullPrice
-                };
-                // ETF 不需要压力测试，或者压力测试就是“再跌10%”
-                stress = { conclusion: etfResult.detail }; // 把建议写在压力测试栏
-                
-                // 强制覆盖择时信号
-                var customTiming = etfResult.timing; 
+                const etf = analyzeETF(price, metric);
+                norm = etf; stress = { conclusion: etf.detail };
+                timing = etf.timing; 
+                timingDetail = etf.detail;
+                tagGap = "N/A"; tagMa = "N/A"; tagVol = "N/A"; // ETF 暂不分析这三项细节
             } else {
-                // === 原有个股逻辑 ===
-                const { defaultGrowthVal } = getSmartGrowthInputs({ metricRaw: metric, metricGrowth5Y: metricGrowth5Y });
+                const { defaultGrowthVal } = getSmartGrowthInputs({ metricRaw: metric, metricGrowth5Y: metric.epsGrowth5Y });
                 const inputs = {
-                    eps: metric.epsTTM, 
-                    growthRate: defaultGrowthVal, 
-                    peRatio: metric.peTTM || 20, 
-                    roe: parseFloat(metric.roeTTM)||0,
-                    pastGrowth: parseFloat(metricGrowth5Y) || 0,
-                    qtrEpsGrowth: parseFloat(metric.epsGrowthQuarterlyYoy) || 0,
-                    revenueGrowth: parseFloat(metric.revenueGrowthQuarterlyYoy) || 0
+                    eps: metric.epsTTM, growthRate: defaultGrowthVal, peRatio: metric.peTTM || 20, roe: metric.roeTTM,
+                    pastGrowth: metric.epsGrowth5Y, qtrEpsGrowth: metric.epsGrowthQuarterlyYoy, revenueGrowth: metric.revenueGrowthQuarterlyYoy
                 };
                 norm = calculateScenarios(inputs, price);
                 stress = calculateScenarios({...inputs, growthRate: inputs.growthRate*0.7, peRatio: inputs.peRatio*0.8}, price);
-            }
-            
-            // C. 择时
+                
+                // === C. 进阶择时 (多维计算) ===
+                const low52 = parseFloat(metric['52WeekLow']);
+                const high52 = parseFloat(metric['52WeekHigh']);
+                
+                const ma50 = parseFloat(metric['50DayAverage']); 
+                const ma20 = parseFloat(metric['20DaySimpleMovingAverage']) || ma50;
+                const avgVol10 = parseFloat(metric['10DayAverageTradingVolume']);
+                const curVol = q.v;
+                
+                // 1. 缺口 (Gap)
+                const gap = (q.o - q.pc) / q.pc;
+                if(gap > 0.03) tagGap = "⚠️ 跳空"; 
+                else if(gap < -0.02) tagGap = "📉 低开"; 
+                else tagGap = "⚪️ 平开";
+                
+                // 2. 趋势 (Trend)
+                if (price > ma20) tagMa = "✅ 站稳";
+                else if (price < ma20) tagMa = "🚫 受制";
+                else tagMa = "⏳ 纠结";
+                
+                // 3. 量能 (Vol)
+                if(avgVol10) {
+                    if(curVol > avgVol10 * 1.5) tagVol = "🔥 爆量";
+                    else if(curVol > avgVol10 * 1.2) tagVol = "📈 放量";
+                    else if(curVol < avgVol10 * 0.7) tagVol = "☁️ 缩量";
+                    else tagVol = "⚪️ 平量";
+                }
 
-            const low52 = parseFloat(metric['52WeekLow']), high52 = parseFloat(metric['52WeekHigh']);
-            let timing = "⏳ 盘整中";
-            if (isETF) {
-                timing = customTiming; // 使用 ETF 的“定投/加仓”信号
-            } else {
-                // 原有的个股择时逻辑
                 if (low52 && high52) {
                     const pos = (price - low52)/(high52 - low52);
-                    if (pos < 0.05) timing = "🔪 左侧博弈";
-                    else if (pos > 0.8) timing = "⚠️ 高位运行";
-                    else if (norm.conclusion.includes("击球")) timing = "🚀 右侧启动";
+                    const reb = (price - low52)/low52;
+                    const bias50 = ma50 ? (price - ma50) / ma50 : 0;
+
+                    // 综合判定逻辑
+                    if (gap > 0.03) {
+                        timing = "✋ 暂缓"; timingDetail = "等待回补缺口";
+                    }
+                    else if (pos < 0.05) { timing = "🔪 左侧"; timingDetail = "深跌试错"; }
+                    else if (pos > 0.8) { timing = "⚠️ 高位"; timingDetail = "止盈区间"; }
+                    else if (reb > 0.05 && reb < 0.25) {
+                        if (bias50 > 0.15) { timing = "✋ 暂缓"; timingDetail = "乖离过大"; }
+                        else if (price < ma20) { timing = "📉 趋势弱"; timingDetail = "未站稳MA20"; }
+                        else if (norm.conclusion.includes("击球")) { 
+                            timing = "🚀 右侧启动"; timingDetail = "最佳买点"; 
+                        } 
+                        else { timing = "📈 反弹"; timingDetail = "仅做波段"; }
+                    }
                 }
             }
 
-            // D. 写入
-            const recordUrl = `https://open.feishu.cn/open-apis/bitable/v1/apps/${CONFIG.FEISHU_APP_TOKEN}/tables/${CONFIG.FEISHU_TABLE_ID}/records/${s.record_id}`;
-            await fetchJson(recordUrl, {
-                method: 'PUT',
-                headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+            // D. 写入飞书 (新增了 3 个独立字段)
+            await fetchJson(`https://open.feishu.cn/open-apis/bitable/v1/apps/${CONFIG.FEISHU_APP_TOKEN}/tables/${CONFIG.FEISHU_TABLE_ID}/records/${s.record_id}`, {
+                method: 'PUT', headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     fields: {
-                        "现价": price,
-                        "性价比(PEG)": getVal(norm.peg),
+                        "现价": price, 
+                        "性价比(PEG)": getVal(norm.peg), 
                         "评价": norm.conclusion,
-                        "压力测试": `🛡️ ${stress.conclusion}`,
-                        "择时信号": timing,
+                        "压力测试": `🛡️ ${stress.conclusion}`, 
+                        "择时信号": `${timing}`, // 简化主信号
+                        
+                        // ✨ 新增的独立列 (请在飞书添加这3列)
+                        "缺口": tagGap,
+                        "趋势": tagMa,
+                        "量能": tagVol,
+                        
                         "风险": getRiskLevel(norm.riskValue),
-                        
-                        "悲观估值": getVal(norm.bearPrice),
-                        "合理估值": getVal(norm.basePrice),
+                        "悲观估值": getVal(norm.bearPrice), 
+                        "合理估值": getVal(norm.basePrice), 
                         "乐观估值": getVal(norm.bullPrice),
-
-                        "回本(PE)": getVal(metric.peTTM || 20, 1),
-                        "过往增速": getVal(metricGrowth5Y) / 100,
-                        "营收增速(季)": getVal(metric.revenueGrowthQuarterlyYoy) / 100,
-                        
-                        "ROE": getVal(metric.roeTTM) / 100,
-                        "净利率": getVal(metric.netProfitMarginTTM) / 100,
-                        "股息率": (getVal(metric.dividendYieldIndicatedAnnual) || getVal(metric.currentDividendYieldTTM)) / 100,
-                        
-                        "EPS增速(季)": getVal(metric.epsGrowthQuarterlyYoy) / 100,
-                        "EPS增速(TTM)": getVal(metric.epsGrowthTTMYoy) / 100,
-                        
+                        "回本(PE)": getVal(metric.peTTM || 20, 1), 
+                        "过往增速": getVal(metric.epsGrowth5Y)/100,
+                        "ROE": getVal(metric.roeTTM)/100, 
+                        "净利率": getVal(metric.netProfitMarginTTM)/100,
+                        "股息率": (getVal(metric.dividendYieldIndicatedAnnual)||getVal(metric.currentDividendYieldTTM))/100,
                         "超链接": { "text": "👉 深度推演", "link": `${CONFIG.WEB_URL}/?symbol=${symbol}` }
                     }
                 })
             });
-            
-            // 报警
+
+            // 报警 (仅当出现新机会时)
             const prevConc = s.fields['评价'] || "";
             if (norm.conclusion.includes("击球区") && !prevConc.includes("击球")) {
-                await sendFeishuAlert(symbol, price, "🟢 黄金击球区", `${norm.conclusion}`);
+                await sendFeishuAlert(symbol, price, "🟢 黄金击球区", norm.conclusion);
             }
 
             console.log(`   ✅ 更新成功: ${symbol}`);
@@ -410,15 +338,14 @@ const main = async () => {
 
         } catch (e) {
             console.error(`   ❌ ${symbol} 失败:`, e.message);
+            errors++;
         }
-        
-        await sleep(1000); // 1秒间隔
+        await sleep(1200); // 间隔
     }
-    console.log(`=== 全部完成 (成功 ${count} 个) ===`);
+    
+    // 4. 发送心跳
+    await sendHeartbeat(stocks.length, count, skipped, errors);
+    console.log(`=== 完成 ${count} ===`);
 };
 
-// 🌟 核心修复：捕获未处理的异常，确保 GitHub Action 变红
-main().catch(error => {
-    console.error("🔥 致命错误，脚本退出:", error);
-    process.exit(1);
-});
+main().catch(e => { console.error(e); process.exit(1); });
